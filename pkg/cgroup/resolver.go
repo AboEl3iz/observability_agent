@@ -1,0 +1,193 @@
+// Package cgroup resolves cgroup_id → container metadata.
+//
+// M0: Cgroup Scoping Foundation
+//
+// Strategy:
+//   We walk /sys/fs/cgroup (cgroup v2 unified hierarchy) and collect
+//   per-directory inode numbers. The inode number of a cgroup directory
+//   equals the cgroup_id returned by bpf_get_current_cgroup_id().
+//
+//   Refresh is triggered on demand if the cache is stale (> 5 seconds).
+//   A background goroutine also refreshes every 10 seconds.
+package cgroup
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	cgroupRoot    = "/sys/fs/cgroup"
+	refreshPeriod = 10 * time.Second
+	staleness     = 5 * time.Second
+)
+
+// ContainerInfo holds the resolved metadata for a cgroup.
+type ContainerInfo struct {
+	// CgroupID is the numeric id as returned by bpf_get_current_cgroup_id().
+	CgroupID uint64
+	// Name is a human friendly label derived from the cgroup path.
+	// For Docker containers it will contain the short container ID.
+	// For bare processes it will reflect their cgroup slice/unit name.
+	Name string
+	// CgroupPath is the relative path under /sys/fs/cgroup.
+	CgroupPath string
+}
+
+// Resolver maps cgroup_id → ContainerInfo.
+// The zero value is safe to use as a no-op resolver (all Lookups return false).
+type Resolver struct {
+	mu          sync.RWMutex
+	cache       map[uint64]ContainerInfo
+	lastRefresh time.Time
+}
+
+// NewResolver creates a Resolver and performs the initial scan.
+func NewResolver() (*Resolver, error) {
+	r := &Resolver{
+		cache: make(map[uint64]ContainerInfo),
+	}
+	if err := r.refresh(); err != nil {
+		return nil, fmt.Errorf("initial cgroup scan failed: %w", err)
+	}
+	go r.backgroundRefresh()
+	return r, nil
+}
+
+// Lookup returns the ContainerInfo for a given cgroup_id.
+// Returns a not-found result if the resolver is empty or the id is unknown.
+func (r *Resolver) Lookup(cgroupID uint64) (ContainerInfo, bool) {
+	r.mu.RLock()
+	if r.cache == nil {
+		r.mu.RUnlock()
+		return ContainerInfo{}, false
+	}
+	info, ok := r.cache[cgroupID]
+	stale := time.Since(r.lastRefresh) > staleness
+	r.mu.RUnlock()
+
+	if !ok && stale {
+		// Trigger a refresh and retry once
+		_ = r.refresh()
+		r.mu.RLock()
+		info, ok = r.cache[cgroupID]
+		r.mu.RUnlock()
+	}
+	return info, ok
+}
+
+// All returns a snapshot of all known cgroup mappings.
+func (r *Resolver) All() map[uint64]ContainerInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[uint64]ContainerInfo, len(r.cache))
+	for k, v := range r.cache {
+		out[k] = v
+	}
+	return out
+}
+
+// refresh walks the cgroup v2 hierarchy and updates the cache.
+func (r *Resolver) refresh() error {
+	fresh := make(map[uint64]ContainerInfo)
+
+	err := filepath.WalkDir(cgroupRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// Skip unreadable subtrees
+			return filepath.SkipDir
+		}
+		if !d.IsDir() {
+			return nil
+		}
+
+		var stat syscall.Stat_t
+		if err := syscall.Stat(path, &stat); err != nil {
+			return nil
+		}
+
+		cgroupID := stat.Ino
+		rel, _ := filepath.Rel(cgroupRoot, path)
+		name := labelFromPath(rel)
+
+		fresh[cgroupID] = ContainerInfo{
+			CgroupID:   cgroupID,
+			Name:       name,
+			CgroupPath: rel,
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.cache = fresh
+	r.lastRefresh = time.Now()
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *Resolver) backgroundRefresh() {
+	ticker := time.NewTicker(refreshPeriod)
+	defer ticker.Stop()
+	for range ticker.C {
+		_ = r.refresh()
+	}
+}
+
+// labelFromPath derives a human-readable label from the cgroup relative path.
+//
+// Docker uses paths like:
+//
+//	system.slice/docker-<64-char-id>.scope
+//	docker/<64-char-id>
+//
+// We extract a short 12-char container ID when one is present, otherwise we
+// return the last two path components as a readable label.
+func labelFromPath(rel string) string {
+	if rel == "." || rel == "" {
+		return "host"
+	}
+
+	parts := strings.Split(rel, "/")
+	last := parts[len(parts)-1]
+
+	// Docker scope: "docker-<id>.scope"
+	if strings.HasPrefix(last, "docker-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "docker-")
+		id = strings.TrimSuffix(id, ".scope")
+		if len(id) >= 12 {
+			return "docker:" + id[:12]
+		}
+		return "docker:" + id
+	}
+
+	// containerd/k8s: "cri-containerd-<id>.scope"
+	if strings.HasPrefix(last, "cri-containerd-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "cri-containerd-")
+		id = strings.TrimSuffix(id, ".scope")
+		if len(id) >= 12 {
+			return "cri:" + id[:12]
+		}
+		return "cri:" + id
+	}
+
+	// Plain docker path: parent dir is "docker", last is full id
+	if len(parts) >= 2 && parts[len(parts)-2] == "docker" {
+		if len(last) >= 12 {
+			return "docker:" + last[:12]
+		}
+		return "docker:" + last
+	}
+
+	// Fall back: join last two components
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + last
+	}
+	return last
+}
