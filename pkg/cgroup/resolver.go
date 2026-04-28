@@ -12,7 +12,11 @@
 package cgroup
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +165,9 @@ func labelFromPath(rel string) string {
 	if strings.HasPrefix(last, "docker-") && strings.HasSuffix(last, ".scope") {
 		id := strings.TrimPrefix(last, "docker-")
 		id = strings.TrimSuffix(id, ".scope")
+		if name := fetchDockerName(id); name != "" {
+			return "docker:" + name
+		}
 		if len(id) >= 12 {
 			return "docker:" + id[:12]
 		}
@@ -190,4 +197,30 @@ func labelFromPath(rel string) string {
 		return parts[len(parts)-2] + "/" + last
 	}
 	return last
+}
+
+func fetchDockerName(id string) string {
+	client := http.Client{
+		Timeout: 200 * time.Millisecond,
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", "/var/run/docker.sock")
+			},
+		},
+	}
+	resp, err := client.Get("http://localhost/containers/" + id + "/json")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var result struct {
+		Name string `json:"Name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(result.Name, "/")
 }

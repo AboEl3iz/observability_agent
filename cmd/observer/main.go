@@ -21,6 +21,7 @@
 //	--containers-only          show only Docker/containerd containers
 //	--show-files               stream file open events to stderr (M3)
 //	--show-tcp                 stream TCP state transitions to stderr (M4)
+//	--show-slow-sys            stream slow syscall events to stderr (M6)
 //	--top N                    limit each table to the top N rows (0 = all)
 package main
 
@@ -49,9 +50,11 @@ func main() {
 	memBPF        := flag.String("mem-bpf", "ebpf/memory.o", "Memory BPF object (M2)")
 	ioBPF         := flag.String("io-bpf", "ebpf/io.o", "I/O BPF object (M3)")
 	netBPF        := flag.String("net-bpf", "ebpf/network.o", "Network BPF object (M4)")
+	sysBPF        := flag.String("sys-bpf", "ebpf/syscall.o", "Syscall BPF object (M6)")
 	containersOnly := flag.Bool("containers-only", false, "show only Docker/containerd containers")
 	showFiles      := flag.Bool("show-files", false, "stream file open events to stderr (M3)")
 	showTCP        := flag.Bool("show-tcp", false, "stream TCP state transitions to stderr (M4)")
+	showSlowSys    := flag.Bool("show-slow-sys", false, "stream slow syscall events to stderr (M6)")
 	topN           := flag.Int("top", 0, "limit each table to top N rows (0 = all)")
 	flag.Parse()
 
@@ -104,6 +107,16 @@ func main() {
 	}
 	defer closeLinks(netLinks)
 
+	// ── M6: Syscall (syscall.o) ───────────────────────────────────────────
+	sysColl, sysLinks, err := loadSyscall(*sysBPF, resolver, logger)
+	if err != nil {
+		logger.Warn("M6 Syscall init failed — Syscall metrics disabled", "err", err)
+	}
+	if sysColl != nil {
+		defer sysColl.Close()
+	}
+	defer closeLinks(sysLinks)
+
 	// ── Graceful shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -122,6 +135,7 @@ func main() {
 		"M2_mem", memColl != nil,
 		"M3_io", ioColl != nil,
 		"M4_net", netColl != nil,
+		"M6_sys", sysColl != nil,
 	)
 	fmt.Println()
 
@@ -154,6 +168,13 @@ func main() {
 				printNetTable(netColl, logger, cfg)
 				if *showTCP {
 					drainTCPEvents(netColl, logger, cfg)
+				}
+			}
+
+			if sysColl != nil {
+				printSyscallTable(sysColl, logger, cfg)
+				if *showSlowSys {
+					drainSlowSyscallEvents(sysColl, logger, cfg)
 				}
 			}
 		}
@@ -573,6 +594,53 @@ func loadNetwork(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*
 	return netColl, links, nil
 }
 
+// ─── M6 loader ───────────────────────────────────────────────────────────────
+
+func loadSyscall(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*collector.SyscallCollector, []link.Link, error) {
+	log.Info("loading M6 Syscall BPF object", "path", objPath)
+	spec, err := ebpf.LoadCollectionSpec(objPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load spec: %w", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("new collection: %w", err)
+	}
+
+	probes := []struct{ cat, ev, prog string }{
+		{"raw_syscalls", "sys_enter", "trace_sys_enter"},
+		{"raw_syscalls", "sys_exit", "trace_sys_exit"},
+	}
+	links, err := attachProbes(coll, probes, log)
+	if err != nil {
+		coll.Close()
+		return nil, nil, err
+	}
+
+	statsMap, ok := coll.Maps["syscall_stats_map"]
+	if !ok {
+		coll.Close()
+		closeLinks(links)
+		return nil, nil, fmt.Errorf("syscall_stats_map not found")
+	}
+	rbMap, ok := coll.Maps["slow_syscall_rb"]
+	if !ok {
+		coll.Close()
+		closeLinks(links)
+		return nil, nil, fmt.Errorf("slow_syscall_rb map not found")
+	}
+
+	sysColl, err := collector.NewSyscallCollector(statsMap, rbMap, resolver, log)
+	if err != nil {
+		coll.Close()
+		closeLinks(links)
+		return nil, nil, err
+	}
+
+	log.Info("M6 Syscall probes attached", "count", len(links))
+	return sysColl, links, nil
+}
+
 // ─── M4 display ───────────────────────────────────────────────────────────────
 
 func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayConfig) {
@@ -637,6 +705,73 @@ func drainTCPEvents(c *collector.NetworkCollector, log *slog.Logger, cfg display
 			"dst", fmt.Sprintf("%s:%d", ev.Daddr, ev.Dport),
 			"old", ev.OldState,
 			"new", ev.NewState,
+		)
+	}
+}
+
+// ─── M6 display ───────────────────────────────────────────────────────────────
+
+func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg displayConfig) {
+	summaries, err := c.Collect()
+	if err != nil {
+		log.Error("Syscall collect error", "err", err)
+		return
+	}
+
+	// Sort by total latency (count * avgLat) or count. Let's do count.
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].Count > summaries[j].Count
+	})
+
+	if cfg.containersOnly {
+		filtered := summaries[:0]
+		for _, s := range summaries {
+			if isContainer(s.ContainerName) {
+				filtered = append(filtered, s)
+			}
+		}
+		summaries = filtered
+	}
+
+	summaries = applyTop(summaries, cfg.topN)
+
+	now := time.Now().Format("15:04:05")
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M6: Syscall Observer  [%s]                                                      ║\n", now)
+	fmt.Printf("╠══════════════════════════╦══════════════╦════════════╦═══════════╦═════════════════╣\n")
+	fmt.Printf("║ Container                ║ Syscall      ║ Count      ║ Failures  ║ Avg Latency (ms)║\n")
+	fmt.Printf("╠══════════════════════════╬══════════════╬════════════╬═══════════╬═════════════════╣\n")
+	if len(summaries) == 0 {
+		fmt.Printf("║ (no Syscall activity)                                                                ║\n")
+	}
+	for _, s := range summaries {
+		fmt.Printf("║ %-24s ║ %-12s ║ %10d ║ %9d ║ %15.3f ║\n",
+			truncate(s.ContainerName, 24),
+			truncate(s.SyscallName, 12),
+			s.Count,
+			s.Failures,
+			s.AvgLatencyMs,
+		)
+	}
+	fmt.Printf("╚══════════════════════════╩══════════════╩════════════╩═══════════╩═════════════════╝\n")
+}
+
+func drainSlowSyscallEvents(c *collector.SyscallCollector, log *slog.Logger, cfg displayConfig) {
+	events, err := c.ReadSlowEvents()
+	if err != nil {
+		log.Error("Slow syscall event read error", "err", err)
+		return
+	}
+	for _, ev := range events {
+		if cfg.containersOnly && !isContainer(ev.ContainerName) {
+			continue
+		}
+		log.Warn("Slow Syscall Detected",
+			"container", ev.ContainerName,
+			"pid", ev.PID,
+			"comm", ev.Comm,
+			"syscall", ev.SyscallName,
+			"latency_ms", fmt.Sprintf("%.2f", ev.LatencyMs),
 		)
 	}
 }

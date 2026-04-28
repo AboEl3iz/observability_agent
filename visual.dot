@@ -1,0 +1,105 @@
+digraph "DOT graph for eBPF program" {
+subgraph "cluster_0" {
+	style="dashed";
+	color="black";
+	label="func_0 ()";
+	fn_0_bb_0 [shape=Mdiamond,style=filled,label="ENTRY"];
+
+	fn_0_bb_2 [shape=record,style=filled,label="{\
+; int trace_block_rq_issue(struct block_rq_issue_args * ctx):\l\
+; int\ trace_block_rq_issue(struct\ block_rq_issue_args\ *ctx)\ \{\l\
+0: (bf) r7 = r1\l\
+| ; u64\ cgroup_id\ =\ bpf_get_current_cgroup_id();\l\
+1: (85) call bpf_get_current_cgroup_id#303632\l\
+| 2: (bf) r6 = r0\l\
+| ; u64\ ts\ \ \ \ \ \ \ \ =\ bpf_ktime_get_ns();\l\
+3: (85) call bpf_ktime_get_ns#298560\l\
+| ; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+4: (71) r1 = *(u8 *)(r7 +34)\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+5: (61) r2 = *(u32 *)(r7 +8)\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+6: (67) r2 \<\<= 32\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+7: (79) r3 = *(u64 *)(r7 +16)\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+8: (67) r3 \<\<= 32\l\
+| 9: (77) r3 \>\>= 32\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+10: (4f) r2 \|= r3\l\
+| ; u64\ scratch_key\ =\ ((u64)ctx-\>dev\ \<\<\ 32)\ \|\ (u64)(ctx-\>sector\ &\ 0xFFFFFFFF);\l\
+11: (7b) *(u64 *)(r10 -8) = r2\l\
+| ; u32\ bytes\ =\ ctx-\>bytes\ ?\ ctx-\>bytes\ :\ (ctx-\>nr_sector\ *\ 512);\l\
+12: (61) r2 = *(u32 *)(r7 +28)\l\
+| ; u32\ bytes\ =\ ctx-\>bytes\ ?\ ctx-\>bytes\ :\ (ctx-\>nr_sector\ *\ 512);\l\
+13: (55) if r2 != 0x0 goto pc+2\l\
+}"];
+
+	fn_0_bb_3 [shape=record,style=filled,label="{\
+; u32\ bytes\ =\ ctx-\>bytes\ ?\ ctx-\>bytes\ :\ (ctx-\>nr_sector\ *\ 512);\l\
+14: (61) r2 = *(u32 *)(r7 +24)\l\
+| ; u32\ bytes\ =\ ctx-\>bytes\ ?\ ctx-\>bytes\ :\ (ctx-\>nr_sector\ *\ 512);\l\
+15: (67) r2 \<\<= 9\l\
+}"];
+
+	fn_0_bb_4 [shape=record,style=filled,label="{\
+; struct\ bio_scratch\ sc\ =\ \{\l\
+16: (63) *(u32 *)(r10 -12) = r2\l\
+| 17: (7b) *(u64 *)(r10 -24) = r0\l\
+| 18: (7b) *(u64 *)(r10 -32) = r6\l\
+| 19: (b7) r2 = 1\l\
+| 20: (b7) r3 = 1\l\
+| ; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+21: (15) if r1 == 0x44 goto pc+1\l\
+}"];
+
+	fn_0_bb_5 [shape=record,style=filled,label="{\
+; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+22: (b7) r3 = 0\l\
+}"];
+
+	fn_0_bb_6 [shape=record,style=filled,label="{\
+; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+23: (15) if r1 == 0x57 goto pc+1\l\
+}"];
+
+	fn_0_bb_7 [shape=record,style=filled,label="{\
+; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+24: (b7) r2 = 0\l\
+}"];
+
+	fn_0_bb_8 [shape=record,style=filled,label="{\
+; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+25: (4f) r2 \|= r3\l\
+| ; struct\ bio_scratch\ sc\ =\ \{\l\
+26: (63) *(u32 *)(r10 -16) = r2\l\
+| 27: (bf) r2 = r10\l\
+| ; u32\ rwflag\ =\ (ctx-\>rwbs[0]\ ==\ 'W'\ \|\|\ ctx-\>rwbs[0]\ ==\ 'D')\ ?\ 1\ :\ 0;\l\
+28: (07) r2 += -8\l\
+| 29: (bf) r3 = r10\l\
+| 30: (07) r3 += -32\l\
+| ; bpf_map_update_elem(&bio_start_map,\ &scratch_key,\ &sc,\ BPF_ANY);\l\
+31: (18) r1 = map[id:23]\l\
+| 33: (b7) r4 = 0\l\
+| 34: (85) call htab_map_update_elem#364592\l\
+| ; return\ 0;\l\
+35: (b7) r0 = 0\l\
+| 36: (95) exit\l\
+}"];
+
+	fn_0_bb_1 [shape=Mdiamond,style=filled,label="EXIT"];
+
+	fn_0_bb_0:s -> fn_0_bb_2:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_2:s -> fn_0_bb_3:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_2:s -> fn_0_bb_4:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_3:s -> fn_0_bb_4:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_4:s -> fn_0_bb_5:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_4:s -> fn_0_bb_6:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_5:s -> fn_0_bb_6:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_6:s -> fn_0_bb_7:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_6:s -> fn_0_bb_8:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_7:s -> fn_0_bb_8:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_8:s -> fn_0_bb_1:n [style="solid,bold", color=black, weight=10, constraint=true];
+	fn_0_bb_0:s -> fn_0_bb_1:n [style="invis", constraint=true];
+}
+}
