@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -26,6 +27,7 @@ type SyscallSummary struct {
 	Count         uint64
 	Failures      uint64
 	AvgLatencyMs  float64
+	Rank          int // 1-based rank within the container (top-N most frequent)
 }
 
 type SyscallKey struct {
@@ -101,6 +103,50 @@ func (c *SyscallCollector) Collect() ([]SyscallSummary, error) {
 	}
 
 	return summaries, nil
+}
+
+// CollectTop5PerContainer returns, for each container, only the top 5 most
+// frequently called syscalls (sorted by Count descending, ranked 1–5).
+// This keeps the display focused and prevents flooding the UI with hundreds
+// of low-frequency syscall entries.
+func (c *SyscallCollector) CollectTop5PerContainer() ([]SyscallSummary, error) {
+	all, err := c.Collect()
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by container name.
+	byContainer := make(map[string][]SyscallSummary)
+	for _, s := range all {
+		byContainer[s.ContainerName] = append(byContainer[s.ContainerName], s)
+	}
+
+	const topN = 5
+	var result []SyscallSummary
+	for _, entries := range byContainer {
+		// Sort this container's syscalls by count descending.
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Count > entries[j].Count
+		})
+		if len(entries) > topN {
+			entries = entries[:topN]
+		}
+		// Stamp rank within the container.
+		for i := range entries {
+			entries[i].Rank = i + 1
+		}
+		result = append(result, entries...)
+	}
+
+	// Final sort: container name asc, then rank asc — stable display order.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ContainerName != result[j].ContainerName {
+			return result[i].ContainerName < result[j].ContainerName
+		}
+		return result[i].Rank < result[j].Rank
+	})
+
+	return result, nil
 }
 
 func (c *SyscallCollector) ReadSlowEvents() ([]SlowSyscallSummary, error) {

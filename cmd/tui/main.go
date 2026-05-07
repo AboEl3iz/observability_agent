@@ -53,7 +53,7 @@ type CpuRow struct{ Container string; CPUSec, RunqMs, CtxPerSec float64; Threads
 type MemRow struct{ Container, LimitMb string; RSSMb, FaultsSec float64 }
 type IoRow  struct{ Container string; ReadKBs, WriteKBs, RLatMs, WLatMs float64 }
 type NetRow struct{ Container string; Flows, Established, TimeWait, CloseWait, Retransmits int }
-type SysRow struct{ Container string; SyscallID uint32; SyscallName string; Count, Failures int; AvgLatMs float64 }
+type SysRow struct{ Container string; Rank int; SyscallID uint32; SyscallName string; Count, Failures int; AvgLatMs float64 }
 
 type Batch struct {
 	Timestamp string
@@ -301,10 +301,7 @@ func (m *model) collectReal() (Batch, []Event) {
 		}
 	}
 	if m.sysColl != nil {
-		if summaries, err := m.sysColl.Collect(); err == nil {
-			sort.Slice(summaries, func(i, j int) bool {
-				return summaries[i].Count > summaries[j].Count
-			})
+		if summaries, err := m.sysColl.CollectTop5PerContainer(); err == nil {
 			b.Sys = sysRows(summaries, m.cfg)
 		}
 		if m.cfg.showSlowSys {
@@ -340,7 +337,9 @@ func (m *model) genDemoBatch() Batch {
 		b.Mem = append(b.Mem, MemRow{c, "1024.0", rand.Float64() * 512, rand.Float64() * 200})
 		b.IO  = append(b.IO,  IoRow{c, rand.Float64() * 5000, rand.Float64() * 2000, rand.Float64() * 3, rand.Float64() * 3})
 		b.Net = append(b.Net, NetRow{c, rand.Intn(20), rand.Intn(15), rand.Intn(5), rand.Intn(3), rand.Intn(10)})
-		b.Sys = append(b.Sys, SysRow{c, uint32(rand.Intn(300)), "sys_demo", rand.Intn(10000), rand.Intn(50), rand.Float64() * 5})
+		for r := 1; r <= 3; r++ {
+			b.Sys = append(b.Sys, SysRow{c, r, uint32(rand.Intn(300)), "sys_demo", rand.Intn(10000)/r, rand.Intn(50), rand.Float64() * 5})
+		}
 	}
 	return b
 }
@@ -619,11 +618,12 @@ func renderNetTable(rows []NetRow, ac lipgloss.Color, w int) string {
 func renderSysTable(rows []SysRow, ac lipgloss.Color, w int) string {
 	var sb strings.Builder
 	sb.WriteString(sectionLabel("▸ M6 Syscall", ac) + "\n")
-	sb.WriteString(styleCol.Render(fmt.Sprintf("  %-22s  %15s  %10s  %10s  %15s", "Container", "Syscall", "Count", "Failures", "Avg Latency(ms)")) + "\n")
+	sb.WriteString(styleCol.Render(fmt.Sprintf("  %-22s  %-4s  %15s  %10s  %10s  %15s", "Container", "Rank", "Syscall", "Count", "Failures", "Avg Latency(ms)")) + "\n")
 	sb.WriteString(sep(w) + "\n")
 	if len(rows) == 0 { sb.WriteString(styleDim.Render("  (no data)") + "\n"); return sb.String() }
 	for _, r := range rows {
-		sb.WriteString(fmt.Sprintf("  %-22s  %15s  %10d  %10d  %15.3f\n", trunc(r.Container, 22), trunc(r.SyscallName, 15), r.Count, r.Failures, r.AvgLatMs))
+		rankStr := fmt.Sprintf("#%d", r.Rank)
+		sb.WriteString(fmt.Sprintf("  %-22s  %-4s  %15s  %10d  %10d  %15.3f\n", trunc(r.Container, 22), rankStr, trunc(r.SyscallName, 15), r.Count, r.Failures, r.AvgLatMs))
 	}
 	return sb.String()
 }

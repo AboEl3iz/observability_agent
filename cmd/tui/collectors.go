@@ -327,6 +327,7 @@ func sysRows(summaries []collector.SyscallSummary, cfg displayConfig) []SysRow {
 		}
 		rows = append(rows, SysRow{
 			Container:   s.ContainerName,
+			Rank:        s.Rank,
 			SyscallID:   s.SyscallID,
 			SyscallName: s.SyscallName,
 			Count:       int(s.Count),
