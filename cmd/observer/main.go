@@ -27,9 +27,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -38,6 +40,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 
 	"ebpf/pkg/cgroup"
@@ -61,6 +64,34 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+
+	// ── Startup Kernel Feature Detection ──────────────────────────────────
+	if err := features.HaveProgramType(ebpf.Kprobe); err != nil {
+		logger.Warn("Kernel may not support Kprobe", "err", err)
+	}
+	if err := features.HaveProgramType(ebpf.TracePoint); err != nil {
+		logger.Warn("Kernel may not support TracePoint", "err", err)
+	}
+	if err := features.HaveMapType(ebpf.RingBuf); err != nil {
+		logger.Warn("Kernel may not support RingBuf (requires 5.8+)", "err", err)
+	}
+
+	// ── HTTP Server (Health) ──────────────────────────────────────────────
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok\n"))
+	})
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+	go func() {
+		logger.Info("Starting HTTP server", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("HTTP server error", "err", err)
+		}
+	}()
 
 	// ── M0: cgroup resolver ────────────────────────────────────────────────
 	resolver, err := cgroup.NewResolver()
@@ -120,6 +151,14 @@ func main() {
 	// ── Graceful shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("HTTP server shutdown error", "err", err)
+		}
+	}()
 
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
@@ -354,6 +393,12 @@ func closeLinks(links []link.Link) {
 // ─── Display helpers ──────────────────────────────────────────────────────────
 
 func truncate(s string, n int) string {
+	if strings.HasPrefix(s, "docker:") {
+		s = s[7:]
+	} else if strings.HasPrefix(s, "cri:") {
+		s = s[4:]
+	}
+
 	if len(s) <= n {
 		return s
 	}

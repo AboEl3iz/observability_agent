@@ -1,0 +1,103 @@
+// Package theme — builtin theme definitions.
+// All themes are constructed once at package init via the build() function
+// in theme.go, so lipgloss.NewStyle() is never called on the render path.
+package theme
+
+// builtins is the registry of all builtin themes.
+var builtins = map[string]Theme{
+	"github-dark": build("github-dark", palette{
+		bgBase:    "#0D1117",
+		bgSurface: "#161B22",
+		bgOverlay: "#21262D",
+		fg:        "#E6EDF3",
+		fgDim:     "#8B949E",
+		fgSubtle:  "#484F58",
+		green:     "#3FB950",
+		red:       "#F85149",
+		yellow:    "#D29922",
+		blue:      "#58A6FF",
+		cyan:      "#39C5CF",
+		magenta:   "#BC8CFF",
+		orange:    "#F0883E",
+	}),
+
+	"nord": build("nord", palette{
+		bgBase:    "#2E3440",
+		bgSurface: "#3B4252",
+		bgOverlay: "#434C5E",
+		fg:        "#ECEFF4",
+		fgDim:     "#D8DEE9",
+		fgSubtle:  "#4C566A",
+		green:     "#A3BE8C",
+		red:       "#BF616A",
+		yellow:    "#EBCB8B",
+		blue:      "#5E81AC",
+		cyan:      "#88C0D0",
+		magenta:   "#B48EAD",
+		orange:    "#D08770",
+	}),
+
+	"gruvbox": build("gruvbox", palette{
+		bgBase:    "#282828",
+		bgSurface: "#3C3836",
+		bgOverlay: "#504945",
+		fg:        "#EBDBB2",
+		fgDim:     "#A89984",
+		fgSubtle:  "#7C6F64",
+		green:     "#B8BB26",
+		red:       "#FB4934",
+		yellow:    "#FABD2F",
+		blue:      "#83A598",
+		cyan:      "#8EC07C",
+		magenta:   "#D3869B",
+		orange:    "#FE8019",
+	}),
+
+	"tokyo-night": build("tokyo-night", palette{
+		bgBase:    "#1A1B26",
+		bgSurface: "#24283B",
+		bgOverlay: "#292E42",
+		fg:        "#C0CAF5",
+		fgDim:     "#565F89",
+		fgSubtle:  "#3B4261",
+		green:     "#9ECE6A",
+		red:       "#F7768E",
+		yellow:    "#E0AF68",
+		blue:      "#7AA2F7",
+		cyan:      "#7DCFFF",
+		magenta:   "#BB9AF7",
+		orange:    "#FF9E64",
+	}),
+
+	"catppuccin": build("catppuccin", palette{
+		bgBase:    "#1E1E2E",
+		bgSurface: "#313244",
+		bgOverlay: "#45475A",
+		fg:        "#CDD6F4",
+		fgDim:     "#7F849C",
+		fgSubtle:  "#585B70",
+		green:     "#A6E3A1",
+		red:       "#F38BA8",
+		yellow:    "#F9E2AF",
+		blue:      "#89B4FA",
+		cyan:      "#89DCEB",
+		magenta:   "#CBA6F7",
+		orange:    "#FAB387",
+	}),
+
+	"solarized": build("solarized", palette{
+		bgBase:    "#002B36",
+		bgSurface: "#073642",
+		bgOverlay: "#094958",
+		fg:        "#839496",
+		fgDim:     "#657B83",
+		fgSubtle:  "#586E75",
+		green:     "#859900",
+		red:       "#DC322F",
+		yellow:    "#B58900",
+		blue:      "#268BD2",
+		cyan:      "#2AA198",
+		magenta:   "#D33682",
+		orange:    "#CB4B16",
+	}),
+}

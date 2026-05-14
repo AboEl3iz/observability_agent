@@ -60,6 +60,19 @@ make go-build
 
 Both the `tui` and `observer` binaries support a similar set of flags.
 
+### Docker Deployment
+
+The simplest and most robust way to run the observer in a production environment is using Docker Compose. The provided `docker-compose.yml` ensures all necessary capabilities and volume mounts are present.
+
+```bash
+# Build the multi-stage Docker image and run it in the background
+make docker-run
+# OR manually:
+docker-compose up -d
+```
+
+The Docker container runs with `host` PID namespace and specific Linux capabilities (`BPF`, `PERFMON`, `SYS_ADMIN`, `SYS_RESOURCE`, `DAC_READ_SEARCH`, `NET_ADMIN`) to avoid needing full `--privileged` mode. It also starts an HTTP server on port `8080` for health checks (`/healthz`).
+
 ### TUI
 
 ```bash
