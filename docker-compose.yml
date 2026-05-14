@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  observer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ebpf-observer:latest
+    container_name: ebpf_observer
+    pid: "host"
+    network_mode: "host"
+    cap_add:
+      - BPF
+      - PERFMON
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - DAC_READ_SEARCH
+      - NET_ADMIN
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys/fs/bpf:/sys/fs/bpf:rw
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Map Prometheus/health port
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

@@ -1,5 +1,5 @@
 BPF_CLANG     := clang
-BPF_CFLAGS    := -O2 -g -target bpf -I/usr/include/$(shell uname -m)-linux-gnu
+BPF_CFLAGS    := -O2 -g -target bpf -I/usr/include/$(shell uname -m)-linux-gnu -D__TARGET_ARCH_x86
 
 GO            := go
 BINARY        := observer
@@ -28,7 +28,7 @@ BPF_SRC_PROG  := ebpf/program.c
 BPF_OBJ_PROG  := ebpf/program.o
 
 
-.PHONY: all build bpf go-build test run run-all run-cpu-only run-files run-tui run-tui-demo clean
+.PHONY: all build bpf go-build test run run-all run-cpu-only run-files run-tui run-tui-demo clean docker-build docker-run
 
 all: build
 
@@ -141,3 +141,10 @@ run-tui-demo-filtered:
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 clean:
 	rm -f ebpf/*.o $(BINARY) $(TUI_BINARY)
+
+# ─── Docker targets ───────────────────────────────────────────────────────────
+docker-build:
+	docker build -t ebpf_observer:latest .
+
+docker-run:
+	docker-compose up -d
