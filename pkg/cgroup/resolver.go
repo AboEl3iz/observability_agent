@@ -28,7 +28,7 @@ import (
 const (
 	cgroupRoot    = "/sys/fs/cgroup"
 	refreshPeriod = 10 * time.Second
-	staleness     = 5 * time.Second
+	staleness     = 100 * time.Millisecond
 )
 
 // ContainerInfo holds the resolved metadata for a cgroup.
@@ -142,6 +142,38 @@ func (r *Resolver) backgroundRefresh() {
 	for range ticker.C {
 		_ = r.refresh()
 	}
+}
+
+// BootTimeOffset computes the nanosecond offset to convert bpf_ktime_get_ns()
+// values (nanoseconds since boot) to wall-clock UTC nanoseconds.
+//
+// Formula: wall_ns = ktime_ns + BootTimeOffset()
+//
+// Implementation: reads the "btime" field from /proc/stat which contains the
+// Unix epoch time (seconds) of the system boot. This is the most reliable
+// method — it matches exactly how the kernel computes monotonic-to-wall offsets.
+//
+// Called once at agent startup and the result passed to all security collectors.
+// Never call per-event — the offset is stable for the lifetime of the agent.
+func BootTimeOffset() (int64, error) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, fmt.Errorf("reading /proc/stat: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "btime ") {
+			continue
+		}
+		var bootSec int64
+		if _, err := fmt.Sscanf(line, "btime %d", &bootSec); err != nil {
+			return 0, fmt.Errorf("parsing btime from /proc/stat: %w", err)
+		}
+		// bootTimeNs is the wall-clock Unix time at boot in nanoseconds.
+		// offset = boot_epoch_ns - 0 (ktime at boot is 0)
+		// For any ktime_ns: wall_ns = boot_epoch_ns + ktime_ns
+		return bootSec * int64(time.Second), nil
+	}
+	return 0, fmt.Errorf("btime not found in /proc/stat")
 }
 
 // labelFromPath derives a human-readable label from the cgroup relative path.
