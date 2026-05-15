@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ebpf/pkg/collector"
+	"ebpf/pkg/event"
 )
 
 // ─── Tick messages ────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ const (
 	EventKindError
 	EventKindOOM
 	EventKindSlowSys
+	EventKindSecurity
 )
 
 // Event is a single timestamped observability event emitted by a collector.
@@ -56,6 +58,7 @@ type Event struct {
 	Kind      EventKind
 	Container string
 	Message   string
+	Envelope  *event.EventEnvelope
 }
 
 // ─── Navigation messages ──────────────────────────────────────────────────────

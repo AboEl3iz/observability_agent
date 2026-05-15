@@ -12,12 +12,14 @@ package app
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"ebpf/internal/tui/msg"
 	"ebpf/pkg/collector"
+	"ebpf/pkg/event"
 )
 
 // CollectorSet bundles all optional eBPF collectors.
@@ -28,6 +30,38 @@ type CollectorSet struct {
 	IO      *collector.IoCollector
 	Net     *collector.NetworkCollector
 	Syscall *collector.SyscallCollector
+
+	// Security (Phases 1-5)
+	Lineage *collector.LineageCollector
+	Exec    *collector.ExecCollector
+	DNS     *collector.DnsCollector
+	PrivEsc *collector.PrivEscCollector
+	Escape  *collector.EscapeCollector
+
+	// Security Event Buffer (drained by collectReal)
+	SecWriter *TuiSecurityWriter
+}
+
+// ─── TUI Security Writer ──────────────────────────────────────────────────────
+
+// TuiSecurityWriter buffers security events until the next data tick.
+type TuiSecurityWriter struct {
+	mu     sync.Mutex
+	events []event.EventEnvelope
+}
+
+func (w *TuiSecurityWriter) Write(ev event.EventEnvelope) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, ev)
+}
+
+func (w *TuiSecurityWriter) Drain() []event.EventEnvelope {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	evs := w.events
+	w.events = nil
+	return evs
 }
 
 // DemoContainers is the set of fake container names used in demo mode.
@@ -179,6 +213,42 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 			}
 		}
 	}
+
+	// Drain security events (Lineage, Exec, DNS, PrivEsc, Escape)
+	if colls.Lineage != nil {
+		_, _ = colls.Lineage.ReadForkEvents()
+	}
+	if colls.Exec != nil {
+		_, _ = colls.Exec.ReadExecEvents()
+	}
+	if colls.DNS != nil {
+		_, _ = colls.DNS.ReadDNSEvents()
+	}
+	if colls.PrivEsc != nil {
+		_, _ = colls.PrivEsc.ReadPrivEscEvents()
+	}
+	if colls.Escape != nil {
+		_, _ = colls.Escape.ReadEscapeEvents()
+	}
+
+	if colls.SecWriter != nil {
+		secEvents := colls.SecWriter.Drain()
+		for _, ev := range secEvents {
+			if f.ContainersOnly && !isContainer(ev.ContainerName) {
+				continue
+			}
+			// Copy loop variable for pointer
+			envelope := ev
+			b.Events = append(b.Events, msg.Event{
+				At:        ev.Timestamp,
+				Kind:      msg.EventKindSecurity,
+				Container: ev.ContainerName,
+				Message:   fmt.Sprintf("[%s] %s", ev.EventType, ev.Process),
+				Envelope:  &envelope,
+			})
+		}
+	}
+
 	return b
 }
 

@@ -7,13 +7,15 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"ebpf/internal/tui/msg"
 	"ebpf/internal/tui/theme"
 	"ebpf/internal/tui/views"
 	"ebpf/internal/tui/widgets/searchbar"
+	"ebpf/pkg/event"
 )
 
 // View implements views.View for the Events tab.
@@ -24,6 +26,7 @@ type View struct {
 	filter  string
 	follow  bool
 	theme   theme.Theme
+	styles  eventStyles
 	w, h    int
 	dirty   bool
 	cached  string
@@ -37,6 +40,7 @@ func New(th theme.Theme) *View {
 		vp:     vp,
 		follow: true,
 		theme:  th,
+		styles: buildEventStyles(th),
 		search: searchbar.New(th),
 	}
 }
@@ -63,7 +67,13 @@ func (v *View) SetSize(w, h int) {
 	v.dirty = true; v.cached = ""
 }
 
-func (v *View) SetTheme(th theme.Theme) { v.theme = th; v.search.SetTheme(th); v.dirty = true; v.cached = "" }
+func (v *View) SetTheme(th theme.Theme) { 
+	v.theme = th
+	v.styles = buildEventStyles(th)
+	v.search.SetTheme(th)
+	v.dirty = true
+	v.cached = ""
+}
 func (v *View) Focus()                  { v.focused = true }
 func (v *View) Blur()                   { v.focused = false }
 func (v *View) StatusLine() string {
@@ -162,8 +172,123 @@ func (v *View) styleEvent(ev msg.Event) string {
 		return v.theme.EventOOM.Render(ev.Message)
 	case msg.EventKindSlowSys:
 		return v.theme.EventSlowSys.Render(ev.Message)
+	case msg.EventKindSecurity:
+		if ev.Envelope != nil {
+			return v.formatSecurityEvent(ev.Envelope)
+		}
+		return v.theme.BadgeRed.Render(" SEC ") + " " + ev.Message
 	default:
 		return v.theme.EventInfo.Render(ev.Message)
+	}
+}
+
+func (v *View) formatSecurityEvent(env *event.EventEnvelope) string {
+	var b strings.Builder
+
+	// 1. Badge based on EventType
+	badge := ""
+	switch env.EventType {
+	case event.EventTypeExec:
+		badge = v.styles.badgeExec.Render(" EXEC ")
+	case event.EventTypeDNSQuery:
+		badge = v.styles.badgeDNS.Render(" DNS  ")
+	case event.EventTypePrivEsc:
+		badge = v.styles.badgePriv.Render(" PRIV ")
+	case event.EventTypeEscapeIndicator:
+		badge = v.styles.badgeEscape.Render(" ESCP ")
+	case event.EventTypeFork:
+		badge = v.theme.BadgeDim.Render(" FORK ")
+	default:
+		badge = v.theme.BadgeDim.Render(" SEC  ")
+	}
+
+	b.WriteString(badge)
+	b.WriteString(" ")
+
+	// 2. Container
+	b.WriteString(v.styles.container.Render(fmt.Sprintf("[%s]", env.ContainerName)))
+	b.WriteString(" ")
+
+	// 3. Process Context
+	procContext := env.Process
+	if env.ParentProcess != "" {
+		procContext = env.ParentProcess + " → " + env.Process
+	}
+	procContext += fmt.Sprintf(" (pid:%d)", env.PID)
+	b.WriteString(v.styles.process.Render(procContext))
+
+	// 4. Metadata
+	if len(env.Metadata) > 0 {
+		b.WriteString("  ")
+		switch env.EventType {
+		case event.EventTypeExec:
+			if argv, ok := env.Metadata["argv"]; ok {
+				b.WriteString(v.styles.metaExec.Render(fmt.Sprintf("cmd: %v", argv)))
+			}
+		case event.EventTypeDNSQuery:
+			q := env.Metadata["query"]
+			qt := env.Metadata["query_type"]
+			b.WriteString(v.styles.metaDNS.Render(fmt.Sprintf("q: %v (%v)", q, qt)))
+		case event.EventTypePrivEsc:
+			op := env.Metadata["escalation_type"]
+			
+			// Try to find the most relevant target based on the escalation type
+			var tgt any
+			if pid, ok := env.Metadata["target_pid"]; ok {
+				tgt = fmt.Sprintf("pid:%v", pid)
+			} else if capName, ok := env.Metadata["capability"]; ok {
+				tgt = capName
+			} else if uid, ok := env.Metadata["new_uid"]; ok {
+				tgt = fmt.Sprintf("uid:%v", uid)
+			} else if gid, ok := env.Metadata["new_gid"]; ok {
+				tgt = fmt.Sprintf("gid:%v", gid)
+			} else {
+				tgt = "<none>"
+			}
+			
+			b.WriteString(v.styles.metaAlert.Render(fmt.Sprintf("op: %v tgt: %v", op, tgt)))
+		case event.EventTypeEscapeIndicator:
+			op := env.Metadata["indicator_type"]
+			flags := env.Metadata["namespace_flags"]
+			if flags == "" || flags == nil {
+				flags = "<none>"
+			}
+			b.WriteString(v.styles.metaAlert.Render(fmt.Sprintf("op: %v flags: %v", op, flags)))
+		default:
+			// Just stringify if unhandled
+			b.WriteString(v.theme.TableDim.Render(fmt.Sprintf("%v", env.Metadata)))
+		}
+	}
+
+	return b.String()
+}
+
+// ─── Local Styles ─────────────────────────────────────────────────────────────
+
+type eventStyles struct {
+	badgeExec   lipgloss.Style
+	badgeDNS    lipgloss.Style
+	badgePriv   lipgloss.Style
+	badgeEscape lipgloss.Style
+	container   lipgloss.Style
+	process     lipgloss.Style
+	metaExec    lipgloss.Style
+	metaDNS     lipgloss.Style
+	metaAlert   lipgloss.Style
+}
+
+func buildEventStyles(th theme.Theme) eventStyles {
+	base := lipgloss.NewStyle()
+	return eventStyles{
+		badgeExec:   base.Background(th.Blue).Foreground(th.BgBase).Bold(true).Padding(0, 1),
+		badgeDNS:    base.Background(th.Green).Foreground(th.BgBase).Bold(true).Padding(0, 1),
+		badgePriv:   base.Background(th.Orange).Foreground(th.BgBase).Bold(true).Padding(0, 1),
+		badgeEscape: base.Background(th.Red).Foreground(th.BgBase).Bold(true).Padding(0, 1),
+		container:   base.Foreground(th.FgSubtle),
+		process:     base.Foreground(th.Fg),
+		metaExec:    base.Foreground(th.Cyan),
+		metaDNS:     base.Foreground(th.Green),
+		metaAlert:   base.Foreground(th.Red).Bold(true),
 	}
 }
 

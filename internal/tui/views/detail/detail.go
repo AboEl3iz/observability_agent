@@ -26,6 +26,7 @@ import (
 	"ebpf/internal/tui/widgets/searchbar"
 	"ebpf/internal/tui/widgets/sparkline"
 	"ebpf/pkg/collector"
+	"ebpf/pkg/event"
 )
 
 const histCap = 120
@@ -49,10 +50,34 @@ type View struct {
 	filter    string
 	vp        viewport.Model
 	theme     theme.Theme
+	badges    detailBadges // pre-built badge styles
 	w, h      int
 	paused    bool
 	dirty     bool
 	cached    string
+}
+
+// detailBadges holds pre-built lipgloss styles for security badges.
+// Built once on New/SetTheme to keep the render path allocation-free.
+type detailBadges struct {
+	exec   lipgloss.Style
+	dns    lipgloss.Style
+	priv   lipgloss.Style
+	escape lipgloss.Style
+	proc   lipgloss.Style
+	meta   lipgloss.Style
+}
+
+func buildDetailBadges(t theme.Theme) detailBadges {
+	base := lipgloss.NewStyle()
+	return detailBadges{
+		exec:   base.Background(t.Blue).Foreground(t.BgBase).Bold(true).Padding(0, 1),
+		dns:    base.Background(t.Green).Foreground(t.BgBase).Bold(true).Padding(0, 1),
+		priv:   base.Background(t.Orange).Foreground(t.BgBase).Bold(true).Padding(0, 1),
+		escape: base.Background(t.Red).Foreground(t.BgBase).Bold(true).Padding(0, 1),
+		proc:   base.Foreground(t.Fg),
+		meta:   base.Foreground(t.Red).Bold(true),
+	}
 }
 
 func New(th theme.Theme) *View {
@@ -61,6 +86,7 @@ func New(th theme.Theme) *View {
 		vp:     vp,
 		search: searchbar.New(th),
 		theme:  th,
+		badges: buildDetailBadges(th),
 	}
 }
 
@@ -132,7 +158,12 @@ func (v *View) SetSize(w, h int) {
 	v.dirty = true; v.cached = ""
 }
 
-func (v *View) SetTheme(t theme.Theme) { v.theme = t; th = t; v.search.SetTheme(t); v.dirty = true; v.cached = "" }
+func (v *View) SetTheme(t theme.Theme) {
+	v.theme = t; th = t
+	v.badges = buildDetailBadges(t)
+	v.search.SetTheme(t)
+	v.dirty = true; v.cached = ""
+}
 func (v *View) Focus()                 {}
 func (v *View) Blur()                  {}
 func (v *View) StatusLine() string {
@@ -313,12 +344,87 @@ func (v *View) renderEvents() string {
 
 func (v *View) styledMsg(e msg.Event) string {
 	switch e.Kind {
-	case msg.EventKindTCP: return v.theme.EventTCP.Render(e.Message)
-	case msg.EventKindError: return v.theme.EventError.Render(e.Message)
-	case msg.EventKindOOM: return v.theme.EventOOM.Render(e.Message)
-	case msg.EventKindSlowSys: return v.theme.EventSlowSys.Render(e.Message)
-	default: return v.theme.EventInfo.Render(e.Message)
+	case msg.EventKindTCP:
+		return v.theme.EventTCP.Render(e.Message)
+	case msg.EventKindError:
+		return v.theme.EventError.Render(e.Message)
+	case msg.EventKindOOM:
+		return v.theme.EventOOM.Render(e.Message)
+	case msg.EventKindSlowSys:
+		return v.theme.EventSlowSys.Render(e.Message)
+	case msg.EventKindSecurity:
+		if e.Envelope != nil {
+			return v.formatSecEvent(e.Envelope)
+		}
+		return v.theme.BadgeRed.Render(" SEC ") + " " + e.Message
+	default:
+		return v.theme.EventInfo.Render(e.Message)
 	}
+}
+
+// formatSecEvent renders a DNS/EXEC/PRIV/ESCP event with coloured badge,
+// process context and key metadata — mirrors events/events.go layout.
+func (v *View) formatSecEvent(env *event.EventEnvelope) string {
+	var b strings.Builder
+
+	// Badge
+	switch env.EventType {
+	case event.EventTypeExec:
+		b.WriteString(v.badges.exec.Render(" EXEC "))
+	case event.EventTypeDNSQuery:
+		b.WriteString(v.badges.dns.Render(" DNS  "))
+	case event.EventTypePrivEsc:
+		b.WriteString(v.badges.priv.Render(" PRIV "))
+	case event.EventTypeEscapeIndicator:
+		b.WriteString(v.badges.escape.Render(" ESCP "))
+	default:
+		b.WriteString(v.theme.BadgeDim.Render(" SEC  "))
+	}
+	b.WriteString(" ")
+
+	// Process context
+	proc := env.Process
+	if env.ParentProcess != "" {
+		proc = env.ParentProcess + " → " + env.Process
+	}
+	proc += fmt.Sprintf(" (pid:%d)", env.PID)
+	b.WriteString(v.badges.proc.Render(proc))
+
+	// Key metadata
+	if len(env.Metadata) > 0 {
+		b.WriteString("  ")
+		switch env.EventType {
+		case event.EventTypeExec:
+			if argv, ok := env.Metadata["argv"]; ok {
+				b.WriteString(v.theme.EventTCP.Render(fmt.Sprintf("cmd: %v", argv)))
+			}
+		case event.EventTypeDNSQuery:
+			q, qt := env.Metadata["query"], env.Metadata["query_type"]
+			b.WriteString(v.theme.EventTCP.Render(fmt.Sprintf("q: %v (%v)", q, qt)))
+		case event.EventTypePrivEsc:
+			op := env.Metadata["escalation_type"]
+			var tgt any
+			if pid, ok := env.Metadata["target_pid"]; ok {
+				tgt = fmt.Sprintf("pid:%v", pid)
+			} else if cap, ok := env.Metadata["capability"]; ok {
+				tgt = cap
+			} else if uid, ok := env.Metadata["new_uid"]; ok {
+				tgt = fmt.Sprintf("uid:%v", uid)
+			} else {
+				tgt = "<none>"
+			}
+			b.WriteString(v.badges.meta.Render(fmt.Sprintf("op:%v tgt:%v", op, tgt)))
+		case event.EventTypeEscapeIndicator:
+			op := env.Metadata["indicator_type"]
+			flags := env.Metadata["namespace_flags"]
+			if flags == nil || flags == "" {
+				flags = "<none>"
+			}
+			b.WriteString(v.badges.meta.Render(fmt.Sprintf("op:%v flags:%v", op, flags)))
+		}
+	}
+
+	return b.String()
 }
 
 func trunc(s string, n int) string {

@@ -29,6 +29,7 @@ import (
 	cpuView "ebpf/internal/tui/views/cpu"
 	detailView "ebpf/internal/tui/views/detail"
 	eventsView "ebpf/internal/tui/views/events"
+	graphsView "ebpf/internal/tui/views/graphs"
 	ioView "ebpf/internal/tui/views/io"
 	memView "ebpf/internal/tui/views/memory"
 	netView "ebpf/internal/tui/views/network"
@@ -45,6 +46,7 @@ const (
 	tabNetwork  = 4
 	tabSyscall  = 5
 	tabEvents   = 6
+	tabGraphs   = 7
 )
 
 // App is the root BubbleTea model.
@@ -96,6 +98,7 @@ func New(cfg config.Config, colls *CollectorSet, demo bool) *App {
 		{Title: "Network", Key: "5"},
 		{Title: "Syscall", Key: "6"},
 		{Title: "Events", Key: "7"},
+		{Title: "Graphs", Key: "8"},
 	}, th)
 
 	tabViews := []views.View{
@@ -106,6 +109,7 @@ func New(cfg config.Config, colls *CollectorSet, demo bool) *App {
 		netView.New(th),
 		sysView.New(th),
 		eventsView.New(th),
+		graphsView.New(th),
 	}
 	tabViews[tabOverview].Focus()
 
@@ -295,7 +299,7 @@ func (a App) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.blurAll()
 		a.activeView().Focus()
 		return a, nil
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		idx := int(key[0]-'1')
 		if idx < len(a.tabViews) {
 			a.blurAll()
@@ -462,7 +466,7 @@ func helpContent() string {
   ──────────
   Tab / ]       next tab
   Shift+Tab / [ prev tab
-  1-7           jump to tab
+  1-8           jump to tab
   Enter         open container detail
   Esc           go back
 
