@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 
 	"ebpf/internal/tui/app"
@@ -32,6 +33,11 @@ func main() {
 	ioBPF          := flag.String("io-bpf", "ebpf/io.o", "I/O BPF object (M3)")
 	netBPF         := flag.String("net-bpf", "ebpf/network.o", "Network BPF object (M4)")
 	sysBPF         := flag.String("sys-bpf", "ebpf/syscall.o", "Syscall BPF object (M6)")
+	_              = flag.String("lineage-bpf", "ebpf/lineage.o", "Lineage BPF object (Phase 1) - ignored in favor of exec extraction")
+	execBPF        := flag.String("exec-bpf", "ebpf/exec.o", "Exec BPF object (Phase 2)")
+	dnsBPF         := flag.String("dns-bpf", "ebpf/dns.o", "DNS BPF object (Phase 3)")
+	privescBPF     := flag.String("privesc-bpf", "ebpf/privesc.o", "PrivEsc BPF object (Phase 4)")
+	escapeBPF      := flag.String("escape-bpf", "ebpf/escape.o", "Escape BPF object (Phase 5)")
 	containersOnly := flag.Bool("containers-only", false, "show only Docker/containerd containers")
 	showFiles      := flag.Bool("show-files", false, "stream file open events (M3)")
 	showTCP        := flag.Bool("show-tcp", false, "stream TCP state transitions (M4)")
@@ -66,6 +72,15 @@ func main() {
 		ioColl  *collector.IoCollector
 		netColl *collector.NetworkCollector
 		sysColl *collector.SyscallCollector
+
+		// Security (Phases 1-5)
+		linColl    *collector.LineageCollector
+		execColl   *collector.ExecCollector
+		dnsColl    *collector.DnsCollector
+		privEscColl *collector.PrivEscCollector
+		escapeColl *collector.EscapeCollector
+		secWriter  = &app.TuiSecurityWriter{}
+
 		allLinks []link.Link
 	)
 
@@ -93,6 +108,38 @@ func main() {
 		sysColl, links, _ = loadSyscall(*sysBPF, resolver, logger)
 		allLinks = append(allLinks, links...)
 
+		// ── Phase 1-5 Security Loaders ──────────────────────────────────────────
+		bootOffset, err := cgroup.BootTimeOffset()
+		if err != nil {
+			logger.Warn("failed to compute boot time offset", "err", err)
+		}
+
+		var execRawColl *ebpf.Collection
+		execColl, links, execRawColl, err = loadExecWithColl(*execBPF, resolver, secWriter, bootOffset, logger)
+		if err == nil {
+			allLinks = append(allLinks, links...)
+			defer execRawColl.Close()
+
+			var treeMap *ebpf.Map
+			linColl, treeMap, err = loadLineageFromExec(execRawColl, resolver, secWriter, bootOffset, logger)
+			if err == nil {
+				dnsColl, links, _ = loadDNS(*dnsBPF, linColl, treeMap, resolver, secWriter, bootOffset, logger)
+				allLinks = append(allLinks, links...)
+
+				var capKprobeAvailable bool
+				privEscColl, links, capKprobeAvailable, _ = loadPrivEsc(*privescBPF, linColl, treeMap, resolver, secWriter, bootOffset, logger)
+				allLinks = append(allLinks, links...)
+				_ = capKprobeAvailable // ignoring for TUI
+
+				escapeColl, links, _ = loadEscape(*escapeBPF, linColl, treeMap, resolver, secWriter, bootOffset, logger)
+				allLinks = append(allLinks, links...)
+			} else {
+				logger.Warn("Lineage extraction from Exec failed", "err", err)
+			}
+		} else {
+			logger.Warn("Exec BPF failed to load", "err", err)
+		}
+
 		defer closeLinks(allLinks)
 	}
 
@@ -102,6 +149,12 @@ func main() {
 		IO:      ioColl,
 		Net:     netColl,
 		Syscall: sysColl,
+		Lineage: linColl,
+		Exec:    execColl,
+		DNS:     dnsColl,
+		PrivEsc: privEscColl,
+		Escape:  escapeColl,
+		SecWriter: secWriter,
 	}
 
 	// ── Launch TUI ────────────────────────────────────────────────────────────
