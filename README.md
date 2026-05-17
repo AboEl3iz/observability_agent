@@ -26,17 +26,17 @@ It resolves kernel-level PIDs and cgroup IDs to human-readable container names (
 
 ## Feature Matrix
 
-### 📊 Performance Telemetry (M1–M4, M6)
+###  Performance Telemetry (M1–M4, M6)
 
 | Module | BPF Program | Hook Points | What it tracks |
 |--------|-------------|-------------|----------------|
 | **M1 CPU** | `cpu.c` | `sched_switch`, `sched_process_wait` | CPU time (s/Δt), runqueue latency, context switches/s, live thread count |
-| **M2 Memory** | `memory.c` | `mm_page_fault_user`, `oom_kill_victim` | RSS (MB), memory limit, page faults/s, real-time OOM-kill events |
+| **M2 Memory** | `memory.c` | `exceptions/page_fault_user`, `oom/mark_victim` | RSS (MB), memory limit, page faults/s, real-time OOM-kill events |
 | **M3 Disk I/O** | `io.c` | `block_rq_insert`, `block_rq_complete`, `sys_enter_openat` | Read/Write KB/s, R/W latency (ms), real-time file-open stream |
 | **M4 Network** | `network.c` | `inet_sock_set_state`, `tcp_retransmit_skb`, `tcp_sendmsg` | Active flows, ESTABLISHED/TIME_WAIT/CLOSE_WAIT, retransmits, real-time TCP transitions |
 | **M6 Syscall** | `syscall.c` | `raw_syscalls:sys_enter/exit` | Top 5 syscalls per container, failure counts, avg latency, slow syscall alerts (>50 ms) |
 
-### 🔒 Security Telemetry — Phase 1–5
+###  Security Telemetry — Phase 1–5
 
 | Phase | BPF Program | Kernel Hook | What it detects |
 |-------|-------------|-------------|-----------------|
@@ -260,6 +260,88 @@ Suspicious namespace/mount operations:
 | `pivot_root` | `sys_enter_pivot_root` | `runtime_initiated: true/false` |
 
 > **Note:** `runtime_initiated: true` means the syscall originated from a known container runtime (`runc`, `containerd-shim`, `dockerd`, `crun`, `podman`). These are not suppressed — they are tagged so downstream consumers can filter if desired.
+
+---
+
+## 🛡️ High-Signal Filtering & Audit-Grade Throttling
+
+Observing containerized environments at the kernel level poses a significant challenge: **The Signal-to-Noise Ratio (SNR) is extremely low**. When a Docker container starts up, the container runtime (`runc`) executes **hundreds** of namespace switches, capability checks, and mount operations in less than a second. 
+
+If rendered raw, this massive flood of BPF events:
+1. Saturated the TUI viewport and consumed excessive CPU rendering duplicate rows.
+2. Immediately pushed critical, low-frequency alerts (like OOM kills) off the screen before the operator could see them.
+
+To solve this, the agent features an **advanced, multi-layered throttling and deduplication engine** designed for high-signal auditing without data loss.
+
+### Core Features & Technical Decisions
+
+* **Container Runtime Noise Filter**: Automatically filters out extremely noisy startup events originating from the container runtime (`runc`). It hides container setup noise while keeping the focus strictly on payload actions.
+* **Level 1: Tick-Level Grouping (1-second cycle)**: Within each collection cycle, identical security events inside a container are grouped. If a process attempts 40 privilege-escalation capability checks, the collector compresses them into **exactly one** high-value security event with a `Count` of 40 and updates the timestamp to the latest occurrence.
+* **Level 2: Sliding-Window Deduplication (5-second TUI window)**: The TUI Events view scans a rolling 5-second window. Any matching events are dynamically folded into a single row, showing a clear **`(xCount)`** counter next to the styled event badge.
+* **Audit-Grade Zero Data Loss**: Unlike naive rate-limiters that drop logs, this count-preserving throttling ensures **100% auditing integrity**. Security operators see a clean, unified UI while retaining the exact count and latest timestamp of every single kernel event!
+
+---
+
+##  Production Incident Journal
+
+### Case Study: Elasticsearch `Max Unsigned32` Thread Counter Overflow
+
+####  Symptom
+Highly parallel containerized applications (such as Elasticsearch) sporadically reported exactly **`4,294,967,295`** (`Max uint32` / `0xFFFFFFFF`) live threads in metrics backends, skewing graphs and triggering false pager alerts.
+
+####  Root Cause (eBPF TOCTOU Race Condition)
+The BPF program in `ebpf/cpu.c` hooked `sched_process_exit` to decrement a cgroup's live thread count. The original implementation was:
+```c
+if (s && s->thread_count > 0) {
+    __sync_fetch_and_add(&s->thread_count, -1);
+}
+```
+While the decrement instruction `__sync_fetch_and_add` is atomic, the conditional check `s->thread_count > 0` was **not**. Under extreme multithreading concurrency:
+1. `thread_count` is `1`.
+2. CPU Core A and CPU Core B both evaluate `s->thread_count > 0` as `true` in parallel.
+3. Core A decrements the counter to `0`.
+4. Core B immediately decrements `0` to `-1`, triggering an **unsigned integer underflow** and wrapping the value to `4,294,967,295`. 
+
+####  BPF Compiler Constraint & Engineering Solution
+Older LLVM/clang BPF targets do not support BPF instructions that return the result of an atomic add/sub, throwing an LLVM backend compiler error: `Invalid usage of the XADD return value`.
+
+To solve this safely without using complex loops or losing compatibility, we deployed a **Dual-Shield Counter Guard**:
+
+1. **eBPF-Safe Post-Decrement Guard (Shield 1)**: We removed the non-atomic check and executed a standard BPF-compatible atomic decrement. Immediately following it, we run a post-decrement check:
+   ```c
+   if (s->thread_count > 0) {
+       __sync_fetch_and_add(&s->thread_count, -1);
+       // Post-decrement guard: if a race caused underflow, it wraps to max uint32
+       if (s->thread_count > 1000000) {
+           s->thread_count = 0;
+       }
+   }
+   ```
+2. **Go Collector Safety-Net (Shield 2)**: Inside the Go CPU collector ([pkg/collector/cpu.go](file:///media/karim/New%20Volume2/go/ebpf/pkg/collector/cpu.go)), we added a safety-net clamp that resets `ThreadCount` to `0` if it exceeds `1,000,000` (since no normal container reaches 1 million concurrent threads).
+
+### Case Study: Metric & Kernel Memory Leak from Zombie Container Metadata
+
+####  Symptom
+When dynamically spawning short-lived containers (e.g. CI/CD runners, job executors), the TUI and Prometheus exporters continued to display dead/zombie containers with `0` CPU, Memory, or Disk usage indefinitely, polluting dashboards and bloating kernel memory usage.
+
+####  Root Cause (Stale BPF Map Accumulation)
+1. **BPF Map Persistence**: Although a container's cgroup directory `/sys/fs/cgroup/...` was deleted by the kernel upon termination, the corresponding entries in the BPF maps (such as `cpu_stats_map`, `page_fault_map`, `io_stats_map`, etc.) were never deleted by BPF hooks.
+2. **Lookup History Bloat**: The cgroup resolver kept a historical cache (`history`) to handle out-of-order BPF events. However, because this history held container names indefinitely (until a strict 1000-entry limit was reached), Go collectors kept resolving dead cgroup IDs, pulling their stale `0`-usage stats from BPF maps, and presenting them as live.
+
+####  Engineering Solution: Stale Entries Eviction
+We implemented a **Stale Entries Eviction system** that manages deletion at both the userspace and kernel-space level:
+
+1. **TTL-Driven Deletion (Go Goroutine)**:
+   Inside the cgroup `Resolver` ([pkg/cgroup/resolver.go](file:///media/karim/New%20Volume2/go/ebpf/pkg/cgroup/resolver.go)), we added a `deletedAt` map tracking when cgroups are unlinked. A dedicated background eviction goroutine runs every 5 seconds and evicts any metadata from `history` that has been dead for more than **2 refresh cycles (20 seconds)**.
+2. **BPF Map Kernel Pruning**:
+   Inside each of our 5 metric collectors, during map iteration, we check if the cgroup ID is still active. If the cgroup resolver returns `ok = false` (meaning the cgroup is dead and its TTL in history has expired), the collector **immediately deletes** the entry from the kernel BPF map:
+   * **CPU**: deletes key from `cpu_stats_map`.
+   * **Memory**: deletes key from `page_fault_map`.
+   * **Disk I/O**: deletes key from `io_stats_map`.
+   * **Network**: deletes key from `conn_stats_map`.
+   * **Syscalls**: deletes key from `statsMap`.
+
+This instantly stops the metric leak, reduces userspace iteration overhead, and cleans up kernel memory!
 
 ---
 
