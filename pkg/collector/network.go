@@ -183,8 +183,13 @@ func (n *NetworkCollector) CollectFlows() ([]ConnSample, error) {
 	iter := n.connMap.Iterate()
 	for iter.Next(&key, &val) {
 		name := fmt.Sprintf("cgroup:%d", key.CgroupID)
-		if info, ok := n.resolver.Lookup(key.CgroupID); ok {
+		info, ok := n.resolver.Lookup(key.CgroupID)
+		if ok {
 			name = info.Name
+		} else {
+			// Dead container and history expired -> evict from BPF map to save kernel memory
+			_ = n.connMap.Delete(&key)
+			continue
 		}
 
 		var ageSec float64

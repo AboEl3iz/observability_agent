@@ -144,8 +144,13 @@ func (c *IoCollector) Collect() ([]IoSample, error) {
 	iter := c.ioMap.Iterate()
 	for iter.Next(&cgroupID, &val) {
 		name := fmt.Sprintf("cgroup:%d", cgroupID)
-		if info, ok := c.resolver.Lookup(cgroupID); ok {
+		info, ok := c.resolver.Lookup(cgroupID)
+		if ok {
 			name = info.Name
+		} else {
+			// Dead container and history expired -> evict from BPF map to save kernel memory
+			_ = c.ioMap.Delete(&cgroupID)
+			continue
 		}
 
 		sample := IoSample{

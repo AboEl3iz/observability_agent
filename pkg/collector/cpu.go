@@ -90,8 +90,18 @@ func (c *CpuCollector) Collect() ([]CpuSample, error) {
 
 		// Resolve container name (M0)
 		name := fmt.Sprintf("cgroup:%d", cgroupID)
-		if info, ok := c.resolver.Lookup(cgroupID); ok {
+		info, ok := c.resolver.Lookup(cgroupID)
+		if ok {
 			name = info.Name
+		} else {
+			// Dead container and history expired -> evict from BPF map to save kernel memory
+			_ = c.cpuMap.Delete(&key)
+			continue
+		}
+
+		threadCount := val.ThreadCount
+		if threadCount > 1000000 { // Max uint32 wrap-around guard
+			threadCount = 0
 		}
 
 		sample := CpuSample{
@@ -100,7 +110,7 @@ func (c *CpuCollector) Collect() ([]CpuSample, error) {
 			TotalNs:       val.TotalNs,
 			RunqLatencyNs: val.RunqLatencyNs,
 			CtxSwitches:   val.CtxSwitches,
-			ThreadCount:   val.ThreadCount,
+			ThreadCount:   threadCount,
 			CollectedAt:   now,
 		}
 

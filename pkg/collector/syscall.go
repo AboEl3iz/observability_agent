@@ -81,8 +81,13 @@ func (c *SyscallCollector) Collect() ([]SyscallSummary, error) {
 	iter := c.statsMap.Iterate()
 	for iter.Next(&key, &stats) {
 		name := fmt.Sprintf("cgroup:%d", key.CgroupID)
-		if info, ok := c.resolver.Lookup(key.CgroupID); ok {
+		info, ok := c.resolver.Lookup(key.CgroupID)
+		if ok {
 			name = info.Name
+		} else {
+			// Dead container and history expired -> evict from BPF map to save kernel memory
+			_ = c.statsMap.Delete(&key)
+			continue
 		}
 
 		avgLat := 0.0

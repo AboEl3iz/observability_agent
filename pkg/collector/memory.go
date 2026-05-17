@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+	"errors"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
@@ -93,9 +94,10 @@ type MemoryCollector struct {
 	resolver *cgroup.Resolver
 	log      *slog.Logger
 
-	mu   sync.Mutex
-	prev map[uint64]PfStats
-	prevAt time.Time
+	mu        sync.Mutex
+	prev      map[uint64]PfStats
+	prevAt    time.Time
+	oomEvents []OOMEvent
 }
 
 // NewMemoryCollector creates a MemoryCollector.
@@ -107,13 +109,15 @@ func NewMemoryCollector(pfMap *ebpf.Map, oomMap *ebpf.Map, resolver *cgroup.Reso
 	if err != nil {
 		return nil, fmt.Errorf("opening oom_events ring buffer: %w", err)
 	}
-	return &MemoryCollector{
+	m := &MemoryCollector{
 		pfMap:    pfMap,
 		oomRB:    rd,
 		resolver: resolver,
 		log:      log,
 		prev:     make(map[uint64]PfStats),
-	}, nil
+	}
+	go m.startOOMReader()
+	return m, nil
 }
 
 // Close releases the ring buffer reader.
@@ -142,9 +146,14 @@ func (m *MemoryCollector) Collect() ([]MemSample, error) {
 	for iter.Next(&cgroupID, &val) {
 		name := fmt.Sprintf("cgroup:%d", cgroupID)
 		var cgPath string
-		if info, ok := m.resolver.Lookup(cgroupID); ok {
+		info, ok := m.resolver.Lookup(cgroupID)
+		if ok {
 			name = info.Name
 			cgPath = info.CgroupPath
+		} else {
+			// Dead container and history expired -> evict from BPF map to save kernel memory
+			_ = m.pfMap.Delete(&cgroupID)
+			continue
 		}
 
 		sample := MemSample{
@@ -188,17 +197,29 @@ func (m *MemoryCollector) Collect() ([]MemSample, error) {
 // ReadOOMEvents drains all pending OOM events from the ring buffer.
 // Non-blocking: returns whatever is available right now.
 func (m *MemoryCollector) ReadOOMEvents() ([]OOMEvent, error) {
-	var events []OOMEvent
-	const rawSize = int(unsafe.Sizeof(oomEventRaw{}))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	events := m.oomEvents
+	m.oomEvents = nil
+	return events, nil
+}
 
+func (m *MemoryCollector) startOOMReader() {
+	m.log.Info("🚀 OOM reader goroutine started successfully!")
+	const rawSize = int(unsafe.Sizeof(oomEventRaw{}))
 	for {
-		// Use a short deadline to make this non-blocking
-		m.oomRB.SetDeadline(time.Now().Add(1 * time.Millisecond))
+		m.log.Info("⏳ OOM reader blocking on Read()...")
 		rec, err := m.oomRB.Read()
 		if err != nil {
-			// deadline exceeded = no more events right now
-			break
+			if errors.Is(err, ringbuf.ErrClosed) {
+				m.log.Info("🛑 OOM reader ringbuffer closed, exiting goroutine")
+				return
+			}
+			m.log.Error("error reading from OOM ringbuf", "err", err)
+			continue
 		}
+
+		m.log.Info("🎉 OOM reader unblocked! Read record from BPF!", "len", len(rec.RawSample))
 
 		if len(rec.RawSample) < rawSize {
 			m.log.Warn("short OOM ring buffer record", "len", len(rec.RawSample))
@@ -229,9 +250,10 @@ func (m *MemoryCollector) ReadOOMEvents() ([]OOMEvent, error) {
 			ev.SwapBytes = readCgroupUint64(cgPath, "memory.swap.current")
 		}
 
-		events = append(events, ev)
+		m.mu.Lock()
+		m.oomEvents = append(m.oomEvents, ev)
+		m.mu.Unlock()
 	}
-	return events, nil
 }
 
 // ---------------------------------------------------------------------------
