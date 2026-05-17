@@ -59,6 +59,17 @@ COPY --from=builder /app/ebpf/*.o /app/ebpf/
 # Expose metrics/health port
 EXPOSE 8080
 
-# Run observer
+# Run observer with both performance and security modules enabled
 ENTRYPOINT ["/app/observer"]
-CMD ["--cpu-bpf", "/app/ebpf/cpu.o", "--mem-bpf", "/app/ebpf/memory.o", "--io-bpf", "/app/ebpf/io.o", "--net-bpf", "/app/ebpf/network.o", "--sys-bpf", "/app/ebpf/syscall.o"]
+CMD ["--cpu-bpf", "/app/ebpf/cpu.o", \
+     "--mem-bpf", "/app/ebpf/memory.o", \
+     "--io-bpf", "/app/ebpf/io.o", \
+     "--net-bpf", "/app/ebpf/network.o", \
+     "--sys-bpf", "/app/ebpf/syscall.o", \
+     "--lineage-bpf", "/app/ebpf/lineage.o", \
+     "--exec-bpf", "/app/ebpf/exec.o", \
+     "--dns-bpf", "/app/ebpf/dns.o", \
+     "--privesc-bpf", "/app/ebpf/privesc.o", \
+     "--escape-bpf", "/app/ebpf/escape.o", \
+     "--containers-only", \
+     "--show-security"]
