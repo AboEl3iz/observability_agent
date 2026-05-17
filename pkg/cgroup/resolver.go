@@ -13,6 +13,7 @@ package cgroup
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -37,10 +38,46 @@ type ContainerInfo struct {
 	CgroupID uint64
 	// Name is a human friendly label derived from the cgroup path.
 	// For Docker containers it will contain the short container ID.
+	// For K8s containers it will contain namespace/pod/container.
 	// For bare processes it will reflect their cgroup slice/unit name.
 	Name string
 	// CgroupPath is the relative path under /sys/fs/cgroup.
 	CgroupPath string
+
+	// Kubernetes-specific metadata
+	Namespace string
+	Pod       string
+	Container string
+}
+
+type kubeletPodList struct {
+	Items []struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			UID       string `json:"uid"`
+		} `json:"metadata"`
+		Status struct {
+			ContainerStatuses []struct {
+				Name        string `json:"name"`
+				ContainerID string `json:"containerID"`
+			} `json:"containerStatuses"`
+			InitContainerStatuses []struct {
+				Name        string `json:"name"`
+				ContainerID string `json:"containerID"`
+			} `json:"initContainerStatuses"`
+			EphemeralContainerStatuses []struct {
+				Name        string `json:"name"`
+				ContainerID string `json:"containerID"`
+			} `json:"ephemeralContainerStatuses"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type K8sInfo struct {
+	Namespace string
+	Pod       string
+	Container string
 }
 
 // Resolver maps cgroup_id → ContainerInfo.
@@ -48,18 +85,25 @@ type ContainerInfo struct {
 type Resolver struct {
 	mu          sync.RWMutex
 	cache       map[uint64]ContainerInfo
+	history     map[uint64]ContainerInfo // historical cache of recently deleted cgroup IDs
+	deletedAt   map[uint64]time.Time     // tracks when a cgroup ID was moved to history
 	lastRefresh time.Time
+	k8sCache    map[string]K8sInfo
 }
 
 // NewResolver creates a Resolver and performs the initial scan.
 func NewResolver() (*Resolver, error) {
 	r := &Resolver{
-		cache: make(map[uint64]ContainerInfo),
+		cache:     make(map[uint64]ContainerInfo),
+		history:   make(map[uint64]ContainerInfo),
+		deletedAt: make(map[uint64]time.Time),
+		k8sCache:  make(map[string]K8sInfo),
 	}
 	if err := r.refresh(); err != nil {
 		return nil, fmt.Errorf("initial cgroup scan failed: %w", err)
 	}
 	go r.backgroundRefresh()
+	go r.backgroundEviction()
 	return r, nil
 }
 
@@ -72,6 +116,9 @@ func (r *Resolver) Lookup(cgroupID uint64) (ContainerInfo, bool) {
 		return ContainerInfo{}, false
 	}
 	info, ok := r.cache[cgroupID]
+	if !ok && r.history != nil {
+		info, ok = r.history[cgroupID]
+	}
 	stale := time.Since(r.lastRefresh) > staleness
 	r.mu.RUnlock()
 
@@ -80,6 +127,9 @@ func (r *Resolver) Lookup(cgroupID uint64) (ContainerInfo, bool) {
 		_ = r.refresh()
 		r.mu.RLock()
 		info, ok = r.cache[cgroupID]
+		if !ok && r.history != nil {
+			info, ok = r.history[cgroupID]
+		}
 		r.mu.RUnlock()
 	}
 	return info, ok
@@ -98,6 +148,43 @@ func (r *Resolver) All() map[uint64]ContainerInfo {
 
 // refresh walks the cgroup v2 hierarchy and updates the cache.
 func (r *Resolver) refresh() error {
+	freshK8s := make(map[string]K8sInfo)
+	if podList, err := fetchKubeletPods(); err == nil {
+		for _, pod := range podList.Items {
+			ns := pod.Metadata.Namespace
+			podName := pod.Metadata.Name
+
+			// Process standard containers, init containers, and ephemeral containers
+			for _, c := range pod.Status.ContainerStatuses {
+				cID := cleanContainerID(c.ContainerID)
+				if cID != "" {
+					freshK8s[cID] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					if len(cID) > 12 {
+						freshK8s[cID[:12]] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					}
+				}
+			}
+			for _, c := range pod.Status.InitContainerStatuses {
+				cID := cleanContainerID(c.ContainerID)
+				if cID != "" {
+					freshK8s[cID] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					if len(cID) > 12 {
+						freshK8s[cID[:12]] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					}
+				}
+			}
+			for _, c := range pod.Status.EphemeralContainerStatuses {
+				cID := cleanContainerID(c.ContainerID)
+				if cID != "" {
+					freshK8s[cID] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					if len(cID) > 12 {
+						freshK8s[cID[:12]] = K8sInfo{Namespace: ns, Pod: podName, Container: c.Name}
+					}
+				}
+			}
+		}
+	}
+
 	fresh := make(map[uint64]ContainerInfo)
 
 	err := filepath.WalkDir(cgroupRoot, func(path string, d os.DirEntry, err error) error {
@@ -118,11 +205,31 @@ func (r *Resolver) refresh() error {
 		rel, _ := filepath.Rel(cgroupRoot, path)
 		name := labelFromPath(rel)
 
-		fresh[cgroupID] = ContainerInfo{
+		info := ContainerInfo{
 			CgroupID:   cgroupID,
 			Name:       name,
 			CgroupPath: rel,
 		}
+
+		// Try to enrich using K8s metadata
+		cID := extractContainerID(rel)
+		if cID != "" {
+			if k, ok := freshK8s[cID]; ok {
+				info.Name = fmt.Sprintf("%s/%s/%s", k.Namespace, k.Pod, k.Container)
+				info.Namespace = k.Namespace
+				info.Pod = k.Pod
+				info.Container = k.Container
+			} else if len(cID) > 12 {
+				if k, ok := freshK8s[cID[:12]]; ok {
+					info.Name = fmt.Sprintf("%s/%s/%s", k.Namespace, k.Pod, k.Container)
+					info.Namespace = k.Namespace
+					info.Pod = k.Pod
+					info.Container = k.Container
+				}
+			}
+		}
+
+		fresh[cgroupID] = info
 		return nil
 	})
 	if err != nil {
@@ -130,7 +237,35 @@ func (r *Resolver) refresh() error {
 	}
 
 	r.mu.Lock()
+	if r.history == nil {
+		r.history = make(map[uint64]ContainerInfo)
+	}
+	if r.deletedAt == nil {
+		r.deletedAt = make(map[uint64]time.Time)
+	}
+	// Move newly deleted/unlisted cgroups from active cache into history
+	for id, info := range r.cache {
+		if _, exists := fresh[id]; !exists {
+			r.history[id] = info
+			r.deletedAt[id] = time.Now()
+		}
+	}
+	// Clean up deletedAt if an ID was resurrected
+	for id := range fresh {
+		delete(r.deletedAt, id)
+	}
+	// Limit historical cache size to prevent memory growth
+	if len(r.history) > 1000 {
+		for id := range r.history {
+			delete(r.history, id)
+			delete(r.deletedAt, id)
+			if len(r.history) <= 1000 {
+				break
+			}
+		}
+	}
 	r.cache = fresh
+	r.k8sCache = freshK8s
 	r.lastRefresh = time.Now()
 	r.mu.Unlock()
 	return nil
@@ -141,6 +276,29 @@ func (r *Resolver) backgroundRefresh() {
 	defer ticker.Stop()
 	for range ticker.C {
 		_ = r.refresh()
+	}
+}
+
+func (r *Resolver) backgroundEviction() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.evictStaleEntries()
+	}
+}
+
+func (r *Resolver) evictStaleEntries() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	ttl := 2 * refreshPeriod // 2 cycles = 20 seconds
+
+	for id, deletedTime := range r.deletedAt {
+		if now.Sub(deletedTime) >= ttl {
+			delete(r.history, id)
+			delete(r.deletedAt, id)
+		}
 	}
 }
 
@@ -211,17 +369,46 @@ func labelFromPath(rel string) string {
 		id := strings.TrimPrefix(last, "cri-containerd-")
 		id = strings.TrimSuffix(id, ".scope")
 		if len(id) >= 12 {
-			return "cri:" + id[:12]
+			return "k8s:" + id[:12]
 		}
-		return "cri:" + id
+		return "k8s:" + id
+	}
+
+	// crio/k8s: "crio-<id>.scope"
+	if strings.HasPrefix(last, "crio-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "crio-")
+		id = strings.TrimSuffix(id, ".scope")
+		if len(id) >= 12 {
+			return "k8s:" + id[:12]
+		}
+		return "k8s:" + id
+	}
+
+	// K8s pod directories (e.g. kubepods.slice/kubepods-pod<id>.slice/docker-<id>.scope or cri-containerd)
+	// Some systems use purely <id> inside pod scopes. We can check if it's inside a kubepods slice.
+	isK8s := false
+	for _, part := range parts {
+		if strings.HasPrefix(part, "kubepods") {
+			isK8s = true
+			break
+		}
 	}
 
 	// Plain docker path: parent dir is "docker", last is full id
 	if len(parts) >= 2 && parts[len(parts)-2] == "docker" {
-		if len(last) >= 12 {
-			return "docker:" + last[:12]
+		prefix := "docker:"
+		if isK8s {
+			prefix = "k8s:"
 		}
-		return "docker:" + last
+		if len(last) >= 12 {
+			return prefix + last[:12]
+		}
+		return prefix + last
+	}
+
+	// CRI-O plain path (sometimes just ID inside pod folder)
+	if isK8s && len(last) == 64 {
+		return "k8s:" + last[:12]
 	}
 
 	// Fall back: join last two components
@@ -255,4 +442,82 @@ func fetchDockerName(id string) string {
 		return ""
 	}
 	return strings.TrimPrefix(result.Name, "/")
+}
+
+func fetchKubeletPods() (*kubeletPodList, error) {
+	// Try HTTP first
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get("http://127.0.0.1:10255/pods")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var list kubeletPodList
+			if err := json.NewDecoder(resp.Body).Decode(&list); err == nil {
+				return &list, nil
+			}
+		}
+	}
+
+	// Try HTTPS with token
+	token, _ := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	clientSec := &http.Client{Timeout: 500 * time.Millisecond, Transport: tr}
+	req, err := http.NewRequest("GET", "https://127.0.0.1:10250/pods", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(token) > 0 {
+		req.Header.Set("Authorization", "Bearer "+string(token))
+	}
+	respSec, err := clientSec.Do(req)
+	if err == nil {
+		defer respSec.Body.Close()
+		if respSec.StatusCode == http.StatusOK {
+			var list kubeletPodList
+			if err := json.NewDecoder(respSec.Body).Decode(&list); err == nil {
+				return &list, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("could not reach kubelet /pods API")
+}
+
+func extractContainerID(rel string) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+
+	// Strip prefixes and suffixes
+	// cri-containerd-<id>.scope
+	if strings.HasPrefix(last, "cri-containerd-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "cri-containerd-")
+		return strings.TrimSuffix(id, ".scope")
+	}
+	// crio-<id>.scope
+	if strings.HasPrefix(last, "crio-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "crio-")
+		return strings.TrimSuffix(id, ".scope")
+	}
+	// docker-<id>.scope
+	if strings.HasPrefix(last, "docker-") && strings.HasSuffix(last, ".scope") {
+		id := strings.TrimPrefix(last, "docker-")
+		return strings.TrimSuffix(id, ".scope")
+	}
+	// plain 64-char hex
+	if len(last) == 64 {
+		return last
+	}
+	return ""
+}
+
+func cleanContainerID(id string) string {
+	if idx := strings.Index(id, "://"); idx != -1 {
+		id = id[idx+3:]
+	}
+	return id
 }

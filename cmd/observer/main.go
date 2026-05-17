@@ -63,9 +63,13 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"ebpf/pkg/cgroup"
 	"ebpf/pkg/collector"
 	"ebpf/pkg/event"
+	"ebpf/pkg/exporter"
 	"ebpf/pkg/lineage"
 )
 
@@ -91,7 +95,11 @@ func main() {
 	showSlowSys := flag.Bool("show-slow-sys", false, "stream slow syscall events to stderr (M6)")
 	showSecurity := flag.Bool("show-security", false, "stream security events to stderr (Phase 1–5)")
 	topN := flag.Int("top", 0, "limit each table to top N rows (0 = all)")
+	k8sSupport := flag.Bool("kubernetes", false, "enable kubernetes support")
 	flag.Parse()
+
+	// Suppress unused warning if needed, actually we just parse it.
+	_ = k8sSupport
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -135,6 +143,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok\n"))
 	})
+	mux.Handle("/metrics", promhttp.Handler())
+
 	srv := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
@@ -145,6 +155,8 @@ func main() {
 			logger.Error("HTTP server error", "err", err)
 		}
 	}()
+
+	promExporter := exporter.NewPrometheusExporter(prometheus.DefaultRegisterer)
 
 	// ── M0: cgroup resolver ────────────────────────────────────────────────
 	resolver, err := cgroup.NewResolver()
@@ -210,12 +222,17 @@ func main() {
 	// when --containers-only is active.
 	var secWriter event.SecurityEventWriter
 	if *showSecurity {
-		base := &stderrSecurityWriter{log: logger}
+		var base event.SecurityEventWriter = &stderrSecurityWriter{log: logger}
 		if *containersOnly {
-			secWriter = &containerFilterWriter{inner: base}
-		} else {
-			secWriter = base
+			base = &containerFilterWriter{inner: base}
 		}
+		secWriter = base
+	}
+
+	// Always wrap with Prometheus metrics even if not logging to stderr
+	secWriter = &exporter.PrometheusSecurityEventWriter{
+		Inner:    secWriter,
+		Exporter: promExporter,
 	}
 
 	// ── Phase 2 → Phase 1: Exec loads first to source process_tree_map ────
@@ -253,7 +270,6 @@ func main() {
 			}
 		}
 	}
-
 
 	// ── Phase 3: DNS (dns.o) ───────────────────────────────────────────────
 	var dnsColl *collector.DnsCollector
@@ -350,29 +366,29 @@ func main() {
 			logger.Info("shutting down gracefully")
 			return
 		case <-ticker.C:
-			printCpuTable(cpuColl, logger, cfg)
+			printCpuTable(cpuColl, logger, cfg, promExporter)
 
 			if memColl != nil {
-				printMemTable(memColl, logger, cfg)
-				drainOOMEvents(memColl, logger)
+				printMemTable(memColl, logger, cfg, promExporter)
+				drainOOMEvents(memColl, logger, promExporter)
 			}
 
 			if ioColl != nil {
-				printIOTable(ioColl, logger, cfg)
+				printIOTable(ioColl, logger, cfg, promExporter)
 				if *showFiles {
 					drainFileEvents(ioColl, logger, cfg)
 				}
 			}
 
 			if netColl != nil {
-				printNetTable(netColl, logger, cfg)
+				printNetTable(netColl, logger, cfg, promExporter)
 				if *showTCP {
 					drainTCPEvents(netColl, logger, cfg)
 				}
 			}
 
 			if sysColl != nil {
-				printSyscallTable(sysColl, logger, cfg)
+				printSyscallTable(sysColl, logger, cfg, promExporter)
 				if *showSlowSys {
 					drainSlowSyscallEvents(sysColl, logger, cfg)
 				}
@@ -619,7 +635,6 @@ func loadLineageFromExec(
 	return linColl, treeMap, nil
 }
 
-
 // ─── Phase 3 loader ───────────────────────────────────────────────────────────
 
 func loadDNS(
@@ -786,7 +801,14 @@ type displayConfig struct {
 // Docker containers: "docker:xxxxxxxxxxxx"
 // containerd/k8s:   "cri:xxxxxxxxxxxx"
 func isContainer(name string) bool {
-	return strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:")
+	if strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:") || strings.HasPrefix(name, "k8s:") {
+		return true
+	}
+	// Kubernetes pod container names are formatted as "namespace/pod/container"
+	if strings.Count(name, "/") == 2 {
+		return true
+	}
+	return false
 }
 
 // ─── M1 loader ───────────────────────────────────────────────────────────────
@@ -803,8 +825,8 @@ func loadCPU(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*coll
 	}
 
 	probes := []struct{ cat, ev, prog string }{
-		{"sched", "sched_switch",       "trace_sched_switch"},
-		{"sched", "sched_wakeup",       "trace_sched_wakeup"},
+		{"sched", "sched_switch", "trace_sched_switch"},
+		{"sched", "sched_wakeup", "trace_sched_wakeup"},
 		{"sched", "sched_process_fork", "trace_sched_fork"},
 		{"sched", "sched_process_exit", "trace_sched_exit"},
 	}
@@ -877,14 +899,32 @@ func loadMemory(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*c
 		return nil, nil, fmt.Errorf("new collection: %w", err)
 	}
 
-	probes := []struct{ cat, ev, prog string }{
-		{"oom", "mark_victim", "trace_oom_mark_victim"},
-		{"exceptions", "page_fault_user", "trace_page_fault_user"},
+	var links []link.Link
+
+	// 1. Attach OOM mark_victim (mandatory for OOM tracking)
+	oomProg, ok := coll.Programs["trace_oom_mark_victim"]
+	if !ok {
+		coll.Close()
+		return nil, nil, fmt.Errorf("trace_oom_mark_victim program not found")
 	}
-	links, err := attachProbes(coll, probes, log)
+	oomLnk, err := link.Tracepoint("oom", "mark_victim", oomProg, nil)
 	if err != nil {
 		coll.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("attaching oom/mark_victim: %w", err)
+	}
+	links = append(links, oomLnk)
+	log.Info("probe attached", "tracepoint", "oom/mark_victim")
+
+	// 2. Attach page_fault_user (best-effort / non-fatal)
+	pfProg, ok := coll.Programs["trace_page_fault_user"]
+	if ok {
+		pfLnk, err := link.Tracepoint("exceptions", "page_fault_user", pfProg, nil)
+		if err != nil {
+			log.Warn("exceptions/page_fault_user tracepoint unavailable — page fault tracking disabled", "err", err)
+		} else {
+			links = append(links, pfLnk)
+			log.Info("probe attached", "tracepoint", "exceptions/page_fault_user")
+		}
 	}
 
 	pfMap, ok := coll.Maps["page_fault_map"]
@@ -1006,11 +1046,15 @@ func applyTop[T any](s []T, n int) []T {
 	return s
 }
 
-func printCpuTable(c *collector.CpuCollector, log *slog.Logger, cfg displayConfig) {
+func printCpuTable(c *collector.CpuCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
 	samples, err := c.Collect()
 	if err != nil {
 		log.Error("CPU collect error", "err", err)
 		return
+	}
+
+	if prom != nil {
+		prom.UpdateCPU(samples)
 	}
 
 	// Sort by CPU time descending
@@ -1052,11 +1096,15 @@ func printCpuTable(c *collector.CpuCollector, log *slog.Logger, cfg displayConfi
 	fmt.Printf("╚══════════════════════════╩════════════╩═══════════════╩══════════╩═══════╝\n")
 }
 
-func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayConfig) {
+func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
 	samples, err := c.Collect()
 	if err != nil {
 		log.Error("Memory collect error", "err", err)
 		return
+	}
+
+	if prom != nil {
+		prom.UpdateMemory(samples)
 	}
 
 	sort.Slice(samples, func(i, j int) bool {
@@ -1100,13 +1148,16 @@ func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayCo
 	fmt.Printf("╚══════════════════════════╩═════════════╩═════════════╩══════════════════════╝\n")
 }
 
-func drainOOMEvents(c *collector.MemoryCollector, log *slog.Logger) {
+func drainOOMEvents(c *collector.MemoryCollector, log *slog.Logger, prom *exporter.PrometheusExporter) {
 	events, err := c.ReadOOMEvents()
 	if err != nil {
 		log.Error("OOM event read error", "err", err)
 		return
 	}
 	for _, ev := range events {
+		if prom != nil {
+			prom.UpdateOOM(ev.ContainerName)
+		}
 		rssKB := ev.Pages * 4
 		log.Error("🔴 OOM KILL DETECTED",
 			"container", ev.ContainerName,
@@ -1121,11 +1172,15 @@ func drainOOMEvents(c *collector.MemoryCollector, log *slog.Logger) {
 	}
 }
 
-func printIOTable(c *collector.IoCollector, log *slog.Logger, cfg displayConfig) {
+func printIOTable(c *collector.IoCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
 	samples, err := c.Collect()
 	if err != nil {
 		log.Error("I/O collect error", "err", err)
 		return
+	}
+
+	if prom != nil {
+		prom.UpdateIO(samples)
 	}
 
 	sort.Slice(samples, func(i, j int) bool {
@@ -1282,11 +1337,15 @@ func loadSyscall(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*
 
 // ─── M4 display ───────────────────────────────────────────────────────────────
 
-func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayConfig) {
+func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
 	summaries, err := c.CollectSummary()
 	if err != nil {
 		log.Error("Network collect error", "err", err)
 		return
+	}
+
+	if prom != nil {
+		prom.UpdateNetwork(summaries)
 	}
 
 	// Sort by active flows descending
@@ -1350,12 +1409,41 @@ func drainTCPEvents(c *collector.NetworkCollector, log *slog.Logger, cfg display
 
 // ─── M6 display ───────────────────────────────────────────────────────────────
 
-func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg displayConfig) {
-	summaries, err := c.CollectTop5PerContainer()
+func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
+	all, err := c.Collect()
 	if err != nil {
 		log.Error("Syscall collect error", "err", err)
 		return
 	}
+
+	if prom != nil {
+		prom.UpdateSyscalls(all)
+	}
+
+	// Compute top 5 manually for display
+	byContainer := make(map[string][]collector.SyscallSummary)
+	for _, s := range all {
+		byContainer[s.ContainerName] = append(byContainer[s.ContainerName], s)
+	}
+	var summaries []collector.SyscallSummary
+	for _, entries := range byContainer {
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Count > entries[j].Count
+		})
+		if len(entries) > 5 {
+			entries = entries[:5]
+		}
+		for i := range entries {
+			entries[i].Rank = i + 1
+		}
+		summaries = append(summaries, entries...)
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].ContainerName != summaries[j].ContainerName {
+			return summaries[i].ContainerName < summaries[j].ContainerName
+		}
+		return summaries[i].Rank < summaries[j].Rank
+	})
 
 	if cfg.containersOnly {
 		filtered := summaries[:0]
