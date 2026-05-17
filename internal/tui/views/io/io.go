@@ -20,8 +20,10 @@ type row struct {
 	Container string
 	ReadKBs   float64
 	WriteKBs  float64
-	RLatMs    float64
-	WLatMs    float64
+	RP95Ms    float64
+	RP99Ms    float64
+	WP95Ms    float64
+	WP99Ms    float64
 }
 
 // View implements views.View for the I/O tab.
@@ -49,13 +51,21 @@ func New(th theme.Theme) *View {
 			SortLess: func(a, b table.Row) bool { return a.(row).WriteKBs > b.(row).WriteKBs },
 			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).WriteKBs) },
 		},
-		{Title: "R lat ms", Width: 9, Sortable: true, Align: "right",
-			SortLess: func(a, b table.Row) bool { return a.(row).RLatMs > b.(row).RLatMs },
-			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).RLatMs) },
+		{Title: "R p95 ms", Width: 9, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).RP95Ms > b.(row).RP95Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).RP95Ms) },
 		},
-		{Title: "W lat ms", Width: 9, Sortable: true, Align: "right",
-			SortLess: func(a, b table.Row) bool { return a.(row).WLatMs > b.(row).WLatMs },
-			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).WLatMs) },
+		{Title: "R p99 ms", Width: 9, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).RP99Ms > b.(row).RP99Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).RP99Ms) },
+		},
+		{Title: "W p95 ms", Width: 9, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).WP95Ms > b.(row).WP95Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).WP95Ms) },
+		},
+		{Title: "W p99 ms", Width: 9, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).WP99Ms > b.(row).WP99Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).WP99Ms) },
 		},
 	}
 	return &View{tbl: table.New(cols, th), search: searchbar.New(th), theme: th}
@@ -71,12 +81,19 @@ func (v *View) SetData(batch msg.DataBatch) {
 	})
 	rows := make([]table.Row, 0, len(samples))
 	for _, s := range samples {
+		rKey := fmt.Sprintf("%s:io_read", s.ContainerName)
+		wKey := fmt.Sprintf("%s:io_write", s.ContainerName)
+		rSnaps := batch.Percentiles[rKey].W60s
+		wSnaps := batch.Percentiles[wKey].W60s
+
 		rows = append(rows, row{
 			Container: s.ContainerName,
 			ReadKBs:   s.ReadBytesPerSec / 1024,
 			WriteKBs:  s.WriteBytesPerSec / 1024,
-			RLatMs:    s.AvgReadLatencyMs,
-			WLatMs:    s.AvgWriteLatencyMs,
+			RP95Ms:    rSnaps.P95,
+			RP99Ms:    rSnaps.P99,
+			WP95Ms:    wSnaps.P95,
+			WP99Ms:    wSnaps.P99,
 		})
 	}
 	v.tbl.SetRows(rows); v.dirty = true; v.cached = ""

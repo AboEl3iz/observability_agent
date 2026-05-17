@@ -22,7 +22,10 @@ type row struct {
 	SyscallName string
 	Count       int
 	Failures    int
-	AvgLatMs    float64
+	P50Ms       float64
+	P95Ms       float64
+	P99Ms       float64
+	MaxMs       float64
 }
 
 // View implements views.View for the Syscall tab.
@@ -57,9 +60,21 @@ func New(th theme.Theme) *View {
 			SortLess: func(a, b table.Row) bool { return a.(row).Failures > b.(row).Failures },
 			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%d", r.(row).Failures) },
 		},
-		{Title: "Avg Lat ms", Width: 12, Sortable: true, Align: "right",
-			SortLess: func(a, b table.Row) bool { return a.(row).AvgLatMs > b.(row).AvgLatMs },
-			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.3f", r.(row).AvgLatMs) },
+		{Title: "p50 ms", Width: 8, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).P50Ms > b.(row).P50Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).P50Ms) },
+		},
+		{Title: "p95 ms", Width: 8, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).P95Ms > b.(row).P95Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).P95Ms) },
+		},
+		{Title: "p99 ms", Width: 8, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).P99Ms > b.(row).P99Ms },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).P99Ms) },
+		},
+		{Title: "Max ms", Width: 8, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).MaxMs > b.(row).MaxMs },
+			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%.2f", r.(row).MaxMs) },
 		},
 	}
 	return &View{tbl: table.New(cols, th), search: searchbar.New(th), theme: th}
@@ -77,13 +92,19 @@ func (v *View) SetData(batch msg.DataBatch) {
 	})
 	rows := make([]table.Row, 0, len(sums))
 	for _, s := range sums {
+		key := fmt.Sprintf("%s:sys_%d", s.ContainerName, s.SyscallID)
+		snaps := batch.Percentiles[key].W60s
+
 		rows = append(rows, row{
 			Container:   s.ContainerName,
 			Rank:        s.Rank,
 			SyscallName: s.SyscallName,
 			Count:       int(s.Count),
 			Failures:    int(s.Failures),
-			AvgLatMs:    s.AvgLatencyMs,
+			P50Ms:       snaps.P50,
+			P95Ms:       snaps.P95,
+			P99Ms:       snaps.P99,
+			MaxMs:       snaps.Max,
 		})
 	}
 	v.tbl.SetRows(rows); v.dirty = true; v.cached = ""
