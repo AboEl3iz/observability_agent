@@ -42,7 +42,8 @@ func loadCPU(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*coll
 	}
 	cpuMap, ok := coll.Maps["cpu_stats_map"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("cpu_stats_map not found")
 	}
 	return collector.NewCpuCollector(cpuMap, resolver), links, nil
@@ -57,28 +58,49 @@ func loadMemory(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*c
 	if err != nil {
 		return nil, nil, fmt.Errorf("new collection: %w", err)
 	}
-	probes := []struct{ cat, ev, prog string }{
-		{"oom", "mark_victim", "trace_oom_mark_victim"},
-		{"exceptions", "page_fault_user", "trace_page_fault_user"},
+	var links []link.Link
+
+	// 1. Attach OOM mark_victim (mandatory for OOM tracking)
+	oomProg, ok := coll.Programs["trace_oom_mark_victim"]
+	if !ok {
+		coll.Close()
+		return nil, nil, fmt.Errorf("trace_oom_mark_victim program not found")
 	}
-	links, err := attachProbes(coll, probes, log)
+	oomLnk, err := link.Tracepoint("oom", "mark_victim", oomProg, nil)
 	if err != nil {
 		coll.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("attaching oom/mark_victim: %w", err)
+	}
+	links = append(links, oomLnk)
+	log.Info("probe attached", "tracepoint", "oom/mark_victim")
+
+	// 2. Attach page_fault_user (best-effort / non-fatal)
+	pfProg, ok := coll.Programs["trace_page_fault_user"]
+	if ok {
+		pfLnk, err := link.Tracepoint("exceptions", "page_fault_user", pfProg, nil)
+		if err != nil {
+			log.Warn("exceptions/page_fault_user tracepoint unavailable — page fault tracking disabled", "err", err)
+		} else {
+			links = append(links, pfLnk)
+			log.Info("probe attached", "tracepoint", "exceptions/page_fault_user")
+		}
 	}
 	pfMap, ok := coll.Maps["page_fault_map"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("page_fault_map not found")
 	}
 	oomMap, ok := coll.Maps["oom_events"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("oom_events map not found")
 	}
 	memColl, err := collector.NewMemoryCollector(pfMap, oomMap, resolver, log)
 	if err != nil {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, err
 	}
 	return memColl, links, nil
@@ -105,17 +127,20 @@ func loadIO(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*colle
 	}
 	ioMap, ok := coll.Maps["io_stats_map"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("io_stats_map not found")
 	}
 	fileMap, ok := coll.Maps["file_events"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("file_events map not found")
 	}
 	ioColl, err := collector.NewIoCollector(ioMap, fileMap, resolver, log)
 	if err != nil {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, err
 	}
 	return ioColl, links, nil
@@ -141,17 +166,20 @@ func loadNetwork(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*
 	}
 	connMap, ok := coll.Maps["conn_stats_map"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("conn_stats_map not found")
 	}
 	tcpRBMap, ok := coll.Maps["tcp_event_rb"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("tcp_event_rb map not found")
 	}
 	netColl, err := collector.NewNetworkCollector(connMap, tcpRBMap, resolver, log)
 	if err != nil {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, err
 	}
 	return netColl, links, nil
@@ -177,17 +205,20 @@ func loadSyscall(objPath string, resolver *cgroup.Resolver, log *slog.Logger) (*
 	}
 	statsMap, ok := coll.Maps["syscall_stats_map"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("syscall_stats_map not found")
 	}
 	rbMap, ok := coll.Maps["slow_syscall_rb"]
 	if !ok {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, fmt.Errorf("slow_syscall_rb map not found")
 	}
 	sysColl, err := collector.NewSyscallCollector(statsMap, rbMap, resolver, log)
 	if err != nil {
-		coll.Close(); closeLinks(links)
+		coll.Close()
+		closeLinks(links)
 		return nil, nil, err
 	}
 	return sysColl, links, nil
@@ -215,8 +246,6 @@ func closeLinks(links []link.Link) {
 		l.Close()
 	}
 }
-
-
 
 // ─── Phase 1 loader ───────────────────────────────────────────────────────────
 
@@ -391,7 +420,6 @@ func loadLineageFromExec(
 	return linColl, treeMap, nil
 }
 
-
 // ─── Phase 3 loader ───────────────────────────────────────────────────────────
 
 func loadDNS(
@@ -558,6 +586,12 @@ type displayConfig struct {
 // Docker containers: "docker:xxxxxxxxxxxx"
 // containerd/k8s:   "cri:xxxxxxxxxxxx"
 func isContainer(name string) bool {
-	return strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:")
+	if strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:") || strings.HasPrefix(name, "k8s:") || strings.HasPrefix(name, "cgroup:") {
+		return true
+	}
+	// Kubernetes pod container names are formatted as "namespace/pod/container"
+	if strings.Count(name, "/") == 2 {
+		return true
+	}
+	return false
 }
-

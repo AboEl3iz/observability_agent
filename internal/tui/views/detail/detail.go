@@ -64,6 +64,7 @@ type detailBadges struct {
 	dns    lipgloss.Style
 	priv   lipgloss.Style
 	escape lipgloss.Style
+	oom    lipgloss.Style
 	proc   lipgloss.Style
 	meta   lipgloss.Style
 }
@@ -75,6 +76,7 @@ func buildDetailBadges(t theme.Theme) detailBadges {
 		dns:    base.Background(t.Green).Foreground(t.BgBase).Bold(true).Padding(0, 1),
 		priv:   base.Background(t.Orange).Foreground(t.BgBase).Bold(true).Padding(0, 1),
 		escape: base.Background(t.Red).Foreground(t.BgBase).Bold(true).Padding(0, 1),
+		oom:    base.Background(t.Red).Foreground(t.BgBase).Bold(true).Padding(0, 1),
 		proc:   base.Foreground(t.Fg),
 		meta:   base.Foreground(t.Red).Bold(true),
 	}
@@ -286,8 +288,15 @@ func (v *View) renderResources() string {
 	}
 	for _, s := range b.IO {
 		if s.ContainerName != v.container { continue }
-		sb.WriteString(fmt.Sprintf("  I/O Read: %.2f KB/s   Write: %.2f KB/s   R-lat: %.2f ms   W-lat: %.2f ms\n",
-			s.ReadBytesPerSec/1024, s.WriteBytesPerSec/1024, s.AvgReadLatencyMs, s.AvgWriteLatencyMs))
+		
+		rKey := fmt.Sprintf("%s:io_read", s.ContainerName)
+		wKey := fmt.Sprintf("%s:io_write", s.ContainerName)
+		rSnaps := b.Percentiles[rKey].W60s
+		wSnaps := b.Percentiles[wKey].W60s
+
+		sb.WriteString(fmt.Sprintf("  I/O Read: %.2f KB/s   Write: %.2f KB/s\n", s.ReadBytesPerSec/1024, s.WriteBytesPerSec/1024))
+		sb.WriteString(fmt.Sprintf("  R-lat (ms):  p50: %.2f  p95: %.2f  p99: %.2f  max: %.2f\n", rSnaps.P50, rSnaps.P95, rSnaps.P99, rSnaps.Max))
+		sb.WriteString(fmt.Sprintf("  W-lat (ms):  p50: %.2f  p95: %.2f  p99: %.2f  max: %.2f\n", wSnaps.P50, wSnaps.P95, wSnaps.P99, wSnaps.Max))
 	}
 	if sb.Len() == 0 {
 		return v.theme.TableDim.Render("  (no data yet)\n")
@@ -313,11 +322,14 @@ func (v *View) renderSyscalls() string {
 	b := v.lastBatch
 	var sb strings.Builder
 	sb.WriteString(v.theme.TableHeader.Render(
-		fmt.Sprintf("  %-4s  %-16s  %10s  %9s  %12s\n", "Rank", "Syscall", "Count", "Failures", "Avg Lat ms")))
+		fmt.Sprintf("  %-4s  %-16s  %8s  %8s  %7s  %7s  %7s\n", "Rank", "Syscall", "Count", "Fail", "p50", "p95", "Max")))
 	for _, s := range b.Sys {
 		if s.ContainerName != v.container { continue }
-		sb.WriteString(fmt.Sprintf("  #%-3d  %-16s  %10d  %9d  %12.3f\n",
-			s.Rank, trunc(s.SyscallName, 16), s.Count, s.Failures, s.AvgLatencyMs))
+		key := fmt.Sprintf("%s:sys_%d", s.ContainerName, s.SyscallID)
+		snaps := b.Percentiles[key].W60s
+
+		sb.WriteString(fmt.Sprintf("  #%-3d  %-16s  %8d  %8d  %7.2f  %7.2f  %7.2f\n",
+			s.Rank, trunc(s.SyscallName, 16), s.Count, s.Failures, snaps.P50, snaps.P95, snaps.Max))
 	}
 	if sb.Len() == 0 {
 		return v.theme.TableDim.Render("  (no syscall data)\n")
@@ -349,6 +361,9 @@ func (v *View) styledMsg(e msg.Event) string {
 	case msg.EventKindError:
 		return v.theme.EventError.Render(e.Message)
 	case msg.EventKindOOM:
+		if e.Envelope != nil {
+			return v.formatSecEvent(e.Envelope)
+		}
 		return v.theme.EventOOM.Render(e.Message)
 	case msg.EventKindSlowSys:
 		return v.theme.EventSlowSys.Render(e.Message)
@@ -377,6 +392,8 @@ func (v *View) formatSecEvent(env *event.EventEnvelope) string {
 		b.WriteString(v.badges.priv.Render(" PRIV "))
 	case event.EventTypeEscapeIndicator:
 		b.WriteString(v.badges.escape.Render(" ESCP "))
+	case "oom_kill":
+		b.WriteString(v.badges.oom.Render(" OOM  "))
 	default:
 		b.WriteString(v.theme.BadgeDim.Render(" SEC  "))
 	}
@@ -421,6 +438,17 @@ func (v *View) formatSecEvent(env *event.EventEnvelope) string {
 				flags = "<none>"
 			}
 			b.WriteString(v.badges.meta.Render(fmt.Sprintf("op:%v flags:%v", op, flags)))
+		case "oom_kill":
+			rss := env.Metadata["rss_kb"]
+			limitMB := int64(0)
+			if lim, ok := env.Metadata["limit_bytes"].(uint64); ok {
+				limitMB = int64(lim / (1024 * 1024))
+			} else if lim, ok := env.Metadata["limit_bytes"].(float64); ok {
+				limitMB = int64(lim / (1024 * 1024))
+			} else if lim, ok := env.Metadata["limit_bytes"].(int64); ok {
+				limitMB = lim / (1024 * 1024)
+			}
+			b.WriteString(v.badges.meta.Render(fmt.Sprintf("rss:%vKB limit:%dMB", rss, limitMB)))
 		}
 	}
 
