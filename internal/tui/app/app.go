@@ -26,27 +26,29 @@ import (
 	"ebpf/internal/tui/widgets/statusbar"
 	"ebpf/internal/tui/widgets/tabbar"
 
-	cpuView "ebpf/internal/tui/views/cpu"
-	detailView "ebpf/internal/tui/views/detail"
-	eventsView "ebpf/internal/tui/views/events"
-	graphsView "ebpf/internal/tui/views/graphs"
-	ioView "ebpf/internal/tui/views/io"
-	memView "ebpf/internal/tui/views/memory"
-	netView "ebpf/internal/tui/views/network"
-	overView "ebpf/internal/tui/views/overview"
-	sysView "ebpf/internal/tui/views/syscall"
+	cpuView     "ebpf/internal/tui/views/cpu"
+	detailView  "ebpf/internal/tui/views/detail"
+	eventsView  "ebpf/internal/tui/views/events"
+	graphsView  "ebpf/internal/tui/views/graphs"
+	ioView      "ebpf/internal/tui/views/io"
+	memView     "ebpf/internal/tui/views/memory"
+	netView     "ebpf/internal/tui/views/network"
+	overView    "ebpf/internal/tui/views/overview"
+	procgView   "ebpf/internal/tui/views/procgraph"
+	sysView     "ebpf/internal/tui/views/syscall"
 )
 
 // Tab indices.
 const (
-	tabOverview = 0
-	tabCPU      = 1
-	tabMemory   = 2
-	tabIO       = 3
-	tabNetwork  = 4
-	tabSyscall  = 5
-	tabEvents   = 6
-	tabGraphs   = 7
+	tabOverview   = 0
+	tabCPU        = 1
+	tabMemory     = 2
+	tabIO         = 3
+	tabNetwork    = 4
+	tabSyscall    = 5
+	tabEvents     = 6
+	tabGraphs     = 7
+	tabProcGraph  = 8
 )
 
 // App is the root BubbleTea model.
@@ -91,14 +93,15 @@ func New(cfg config.Config, colls *CollectorSet, demo bool) *App {
 	th := theme.Get(cfg.Theme)
 
 	tabs := tabbar.New([]tabbar.Tab{
-		{Title: "Overview", Key: "1"},
-		{Title: "CPU", Key: "2"},
-		{Title: "Memory", Key: "3"},
-		{Title: "I/O", Key: "4"},
-		{Title: "Network", Key: "5"},
-		{Title: "Syscall", Key: "6"},
-		{Title: "Events", Key: "7"},
-		{Title: "Graphs", Key: "8"},
+		{Title: "Overview",  Key: "1"},
+		{Title: "CPU",       Key: "2"},
+		{Title: "Memory",    Key: "3"},
+		{Title: "I/O",       Key: "4"},
+		{Title: "Network",   Key: "5"},
+		{Title: "Syscall",   Key: "6"},
+		{Title: "Events",    Key: "7"},
+		{Title: "Graphs",    Key: "8"},
+		{Title: "ProcGraph", Key: "9"},
 	}, th)
 
 	tabViews := []views.View{
@@ -110,6 +113,7 @@ func New(cfg config.Config, colls *CollectorSet, demo bool) *App {
 		sysView.New(th),
 		eventsView.New(th),
 		graphsView.New(th),
+		procgView.New(th),
 	}
 	tabViews[tabOverview].Focus()
 
@@ -299,7 +303,7 @@ func (a App) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.blurAll()
 		a.activeView().Focus()
 		return a, nil
-	case "1", "2", "3", "4", "5", "6", "7", "8":
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		idx := int(key[0]-'1')
 		if idx < len(a.tabViews) {
 			a.blurAll()
@@ -466,7 +470,7 @@ func helpContent() string {
   ──────────
   Tab / ]       next tab
   Shift+Tab / [ prev tab
-  1-8           jump to tab
+  1-9           jump to tab
   Enter         open container detail
   Esc           go back
 
@@ -484,6 +488,14 @@ func helpContent() string {
   p             pause/resume
   /             filter events
   ↑↓ g G       scroll
+
+  ProcGraph tab (9)
+  ─────────────────
+  ←/→ or h/l   switch panels
+  ↑↓ or j/k    navigate list/tree
+  g / G         top / bottom
+  a             show ancestry
+  /             filter by comm
 
   Global
   ──────

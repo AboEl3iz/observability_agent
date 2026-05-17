@@ -20,6 +20,15 @@ import (
 	"ebpf/internal/tui/msg"
 	"ebpf/pkg/collector"
 	"ebpf/pkg/event"
+	"ebpf/pkg/graph"
+	"ebpf/pkg/percentile"
+	"ebpf/pkg/timeseries"
+)
+
+var (
+	// Global telemetry singletons for cross-tick state
+	latencyAgg = percentile.NewLatencyAggregator()
+	tsBuffer   = timeseries.NewBuffer[msg.DataBatch](300)
 )
 
 // CollectorSet bundles all optional eBPF collectors.
@@ -40,6 +49,10 @@ type CollectorSet struct {
 
 	// Security Event Buffer (drained by collectReal)
 	SecWriter *TuiSecurityWriter
+
+	// Graph is the live process graph, populated from fork/exec events.
+	// Created once in main and shared here.  Never nil after construction.
+	Graph *graph.ProcessGraph
 }
 
 // ─── TUI Security Writer ──────────────────────────────────────────────────────
@@ -77,7 +90,14 @@ var DemoContainers = []string{
 
 // isContainer reports whether name looks like a Docker or containerd container.
 func isContainer(name string) bool {
-	return strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:")
+	if strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:") || strings.HasPrefix(name, "k8s:") || strings.HasPrefix(name, "cgroup:") {
+		return true
+	}
+	// Kubernetes pod container names are formatted as "namespace/pod/container"
+	if strings.Count(name, "/") == 2 {
+		return true
+	}
+	return false
 }
 
 // ─── Render tick ─────────────────────────────────────────────────────────────
@@ -136,15 +156,25 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 		}
 		if oomEvs, err := colls.Mem.ReadOOMEvents(); err == nil {
 			for _, o := range oomEvs {
-				if f.ContainersOnly && !isContainer(o.ContainerName) {
-					continue
-				}
 				b.Events = append(b.Events, msg.Event{
 					At:        o.Timestamp,
 					Kind:      msg.EventKindOOM,
 					Container: o.ContainerName,
 					Message: fmt.Sprintf("🔴 OOM KILL %s pid=%d comm=%s rss=%dKB",
 						o.ContainerName, o.VictimPID, o.Comm, o.Pages*4),
+					Envelope: &event.EventEnvelope{
+						Timestamp:     o.Timestamp,
+						CgroupID:      o.CgroupID,
+						ContainerName: o.ContainerName,
+						PID:           o.VictimPID,
+						Process:       o.Comm,
+						EventType:     "oom_kill",
+						Metadata: map[string]any{
+							"rss_kb":        o.Pages * 4,
+							"limit_bytes":   o.MemoryLimitBytes,
+							"oom_score_adj": o.OOMScoreAdj,
+						},
+					},
 				})
 			}
 		}
@@ -152,6 +182,14 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 	if colls.IO != nil {
 		if samples, err := colls.IO.Collect(); err == nil {
 			b.IO = filterIO(samples, f)
+			for _, s := range samples {
+				if s.ReadIOs > 0 && s.AvgReadLatencyMs > 0 {
+					latencyAgg.RecordValues(fmt.Sprintf("%s:io_read", s.ContainerName), int64(s.AvgReadLatencyMs*1000.0), int64(s.ReadIOs))
+				}
+				if s.WriteIOs > 0 && s.AvgWriteLatencyMs > 0 {
+					latencyAgg.RecordValues(fmt.Sprintf("%s:io_write", s.ContainerName), int64(s.AvgWriteLatencyMs*1000.0), int64(s.WriteIOs))
+				}
+			}
 		}
 		if f.ShowFiles {
 			if fevs, err := colls.IO.ReadFileEvents(); err == nil {
@@ -195,6 +233,11 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 	if colls.Syscall != nil {
 		if sums, err := colls.Syscall.CollectTop5PerContainer(); err == nil {
 			b.Sys = filterSys(sums, f)
+			for _, s := range sums {
+				if s.Count > 0 && s.AvgLatencyMs > 0 {
+					latencyAgg.RecordValues(fmt.Sprintf("%s:sys_%d", s.ContainerName, s.SyscallID), int64(s.AvgLatencyMs*1000.0), int64(s.Count))
+				}
+			}
 		}
 		if f.ShowSlowSys {
 			if sevs, err := colls.Syscall.ReadSlowEvents(); err == nil {
@@ -215,14 +258,37 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 	}
 
 	// Drain security events (Lineage, Exec, DNS, PrivEsc, Escape)
+	// and feed them into the ProcessGraph.
 	if colls.Lineage != nil {
-		_, _ = colls.Lineage.ReadForkEvents()
+		if forkEvs, err := colls.Lineage.ReadForkEvents(); err == nil && colls.Graph != nil {
+			for _, ev := range forkEvs {
+				// Respect --containers-only: skip non-container cgroups.
+				if f.ContainersOnly && !isContainer(ev.ContainerName) {
+					continue
+				}
+				colls.Graph.AddFork(ev)
+			}
+		}
 	}
 	if colls.Exec != nil {
-		_, _ = colls.Exec.ReadExecEvents()
+		if execEvs, err := colls.Exec.ReadExecEvents(); err == nil && colls.Graph != nil {
+			for _, ev := range execEvs {
+				// Respect --containers-only: skip non-container cgroups.
+				if f.ContainersOnly && !isContainer(ev.ContainerName) {
+					continue
+				}
+				colls.Graph.AddExec(ev)
+			}
+		}
 	}
 	if colls.DNS != nil {
-		_, _ = colls.DNS.ReadDNSEvents()
+		if dnsEvs, err := colls.DNS.ReadDNSEvents(); err == nil {
+			for _, ev := range dnsEvs {
+				if lat, ok := ev.Metadata["latency_ms"].(float64); ok {
+					latencyAgg.Record(fmt.Sprintf("%s:dns", ev.ContainerName), int64(lat*1000.0))
+				}
+			}
+		}
 	}
 	if colls.PrivEsc != nil {
 		_, _ = colls.PrivEsc.ReadPrivEscEvents()
@@ -233,21 +299,57 @@ func collectReal(colls *CollectorSet, f CollectFilter) msg.DataBatch {
 
 	if colls.SecWriter != nil {
 		secEvents := colls.SecWriter.Drain()
+		grouped := make(map[string]*msg.Event)
+		var order []string
+
 		for _, ev := range secEvents {
 			if f.ContainersOnly && !isContainer(ev.ContainerName) {
 				continue
 			}
-			// Copy loop variable for pointer
-			envelope := ev
-			b.Events = append(b.Events, msg.Event{
-				At:        ev.Timestamp,
-				Kind:      msg.EventKindSecurity,
-				Container: ev.ContainerName,
-				Message:   fmt.Sprintf("[%s] %s", ev.EventType, ev.Process),
-				Envelope:  &envelope,
-			})
+			// Skip extremely noisy container setup events from container runtime (runc)
+			if strings.HasPrefix(strings.ToLower(ev.Process), "runc") {
+				continue
+			}
+
+			key := fmt.Sprintf("%s:%s:%s", ev.ContainerName, ev.EventType, ev.Process)
+			if existing, ok := grouped[key]; ok {
+				existing.Count++
+				existing.At = ev.Timestamp // Update to latest timestamp
+			} else {
+				envelope := ev
+				grouped[key] = &msg.Event{
+					At:        ev.Timestamp,
+					Kind:      msg.EventKindSecurity,
+					Container: ev.ContainerName,
+					Message:   fmt.Sprintf("[%s] %s", ev.EventType, ev.Process),
+					Envelope:  &envelope,
+					Count:     1,
+				}
+				order = append(order, key)
+
+				// Correlate security event to the process graph node.
+				if colls.Graph != nil {
+					colls.Graph.CorrelateEvent(ev.CgroupID, ev.PID, &envelope)
+				}
+			}
+		}
+
+		for _, key := range order {
+			b.Events = append(b.Events, *grouped[key])
 		}
 	}
+
+	// Attach a lock-free graph snapshot to the batch.
+	if colls.Graph != nil {
+		b.Graph = colls.Graph.Snapshot()
+	}
+
+	// Rotate and snapshot percentiles
+	latencyAgg.Tick()
+	b.Percentiles = latencyAgg.Snapshot()
+
+	// Push to time-series history
+	tsBuffer.Push(b)
 
 	return b
 }
@@ -380,6 +482,144 @@ func genDemoBatch(f CollectFilter) msg.DataBatch {
 			Container: c,
 			Message:   fmt.Sprintf("[TCP] %s  %s → %s", c, s1, s2),
 		})
+		if rndi(10) == 0 {
+			b.Events = append(b.Events, msg.Event{
+				At:        time.Now(),
+				Kind:      msg.EventKindOOM,
+				Container: c,
+				Message:   fmt.Sprintf("🔴 OOM KILL %s pid=%d comm=%s rss=%dKB", c, rndi(10000)+1000, "stress", rndi(128*1024)),
+				Envelope: &event.EventEnvelope{
+					Timestamp:     time.Now(),
+					CgroupID:      uint64(rndi(100)),
+					ContainerName: c,
+					PID:           uint32(rndi(10000) + 1000),
+					Process:       "stress",
+					EventType:     "oom_kill",
+					Metadata: map[string]any{
+						"rss_kb":        uint64(rndi(256 * 1024)),
+						"limit_bytes":   uint64(512 * 1024 * 1024),
+						"oom_score_adj": int32(500),
+					},
+				},
+			})
+		}
 	}
+
+	// Attach a stable demo process graph (rebuilt once per batch).
+	b.Graph = buildDemoGraph(f)
 	return b
+}
+
+// buildDemoGraph constructs a synthetic process tree resembling a real
+// containerised workload.  Called only in demo mode.
+// Each demo cgroup maps to a named docker: container so the TUI can display
+// readable names and respect --containers-only filtering.
+func buildDemoGraph(f CollectFilter) *graph.Snapshot {
+	g := graph.New(512)
+	now := time.Now()
+
+	// cgroup → docker container name mapping (mirrors DemoContainers).
+	cgName := map[uint64]string{
+		1: "docker:nginx",
+		2: "docker:postgres",
+		3: "docker:redis",
+	}
+
+	mkFork := func(cgroupID uint64, pid, ppid uint32, comm, parent string, secsAgo float64, sid uint32) event.EventEnvelope {
+		cn := cgName[cgroupID]
+		env := event.EventEnvelope{
+			Timestamp:     now.Add(-time.Duration(secsAgo * float64(time.Second))),
+			CgroupID:      cgroupID,
+			ContainerName: cn,
+			PID:           pid,
+			PPID:          ppid,
+			Process:       comm,
+			ParentProcess: parent,
+			EventType:     event.EventTypeFork,
+		}
+		if sid != 0 {
+			env.Metadata = map[string]any{"sid": sid}
+		}
+		return env
+	}
+	mkExec := func(cgroupID uint64, pid, ppid uint32, comm, path string) event.EventEnvelope {
+		cn := cgName[cgroupID]
+		return event.EventEnvelope{
+			Timestamp:     now.Add(-time.Second),
+			CgroupID:      cgroupID,
+			ContainerName: cn,
+			PID:           pid,
+			PPID:          ppid,
+			Process:       comm,
+			EventType:     event.EventTypeExec,
+			Metadata:      map[string]any{"full_path": path},
+		}
+	}
+
+	// Helper: add fork only when not filtered.
+	addFork := func(env event.EventEnvelope) {
+		if f.ContainersOnly && !isContainer(env.ContainerName) {
+			return
+		}
+		g.AddFork(env)
+	}
+	addExec := func(env event.EventEnvelope) {
+		if f.ContainersOnly && !isContainer(env.ContainerName) {
+			return
+		}
+		g.AddExec(env)
+	}
+
+	// ── cgroup 1: docker:nginx ────────────────────────────────────────────────
+	addFork(mkFork(1, 1, 0, "containerd", "", 120, 1))
+	addFork(mkFork(1, 100, 1, "dockerd", "containerd", 110, 1))
+	addFork(mkFork(1, 200, 100, "runc", "dockerd", 100, 2))
+	addFork(mkFork(1, 301, 200, "nginx", "runc", 95, 2))
+	addFork(mkFork(1, 302, 200, "nginx", "runc", 94, 2))
+	addFork(mkFork(1, 303, 200, "nginx", "runc", 93, 2))
+	addExec(mkExec(1, 301, 200, "nginx", "/usr/sbin/nginx"))
+	addExec(mkExec(1, 302, 200, "nginx", "/usr/sbin/nginx"))
+	addExec(mkExec(1, 303, 200, "nginx", "/usr/sbin/nginx"))
+
+	// ── cgroup 2: docker:postgres ─────────────────────────────────────────────
+	addFork(mkFork(2, 1, 0, "containerd", "", 80, 3))
+	addFork(mkFork(2, 400, 1, "runc", "containerd", 79, 3))
+	addFork(mkFork(2, 500, 400, "python3", "runc", 70, 3))
+	addFork(mkFork(2, 501, 500, "gunicorn", "python3", 65, 3))
+	addFork(mkFork(2, 601, 501, "worker", "gunicorn", 60, 3))
+	addFork(mkFork(2, 602, 501, "worker", "gunicorn", 59, 3))
+	addFork(mkFork(2, 603, 501, "worker", "gunicorn", 58, 3))
+	addExec(mkExec(2, 500, 400, "python3", "/usr/bin/python3"))
+	addExec(mkExec(2, 501, 500, "gunicorn", "/usr/local/bin/gunicorn"))
+
+	// ── cgroup 3: docker:redis ────────────────────────────────────────────────
+	addFork(mkFork(3, 1, 0, "postgres", "", 50, 4))
+	addFork(mkFork(3, 700, 1, "postgres", "postgres", 49, 4))
+	addFork(mkFork(3, 701, 1, "postgres", "postgres", 48, 4))
+	addFork(mkFork(3, 702, 1, "postgres", "postgres", 47, 4))
+	addExec(mkExec(3, 1, 0, "postgres", "/usr/lib/postgresql/14/bin/postgres"))
+
+	// Simulate a privilege escalation event on the gunicorn worker.
+	privEv := &event.EventEnvelope{
+		Timestamp: now.Add(-5 * time.Second),
+		CgroupID:  2,
+		PID:       601,
+		EventType: event.EventTypePrivEsc,
+		Process:   "worker",
+		Metadata:  map[string]any{"cap": "CAP_SYS_ADMIN"},
+	}
+	g.CorrelateEvent(2, 601, privEv)
+
+	// Simulate a DNS query from nginx.
+	dnsEv := &event.EventEnvelope{
+		Timestamp: now.Add(-2 * time.Second),
+		CgroupID:  1,
+		PID:       301,
+		EventType: event.EventTypeDNSQuery,
+		Process:   "nginx",
+		Metadata:  map[string]any{"query": "api.internal."},
+	}
+	g.CorrelateEvent(1, 301, dnsEv)
+
+	return g.Snapshot()
 }

@@ -75,8 +75,11 @@ func (m Model) Latest() float64 {
 // Format:  label  ▁▂▃▄▅▆▇█▇▆  12.34 unit
 func (m Model) View() string {
 	vals := m.values()
-	// Take the rightmost `width` samples for rendering.
-	graphW := m.width - len(m.label) - len(m.unit) - 10
+
+	// The format string is: "%-8s %s %6.1f %s"
+	// Fixed characters: 8 (label) + 1 (space) + 1 (space) + 6 (float) + 1 (space) = 17
+	fixedW := 17 + len(m.unit)
+	graphW := m.width - fixedW
 	if graphW < 4 {
 		graphW = 4
 	}
@@ -99,6 +102,13 @@ func (m Model) View() string {
 			idx = len(bars) - 1
 		}
 		spark.WriteRune(bars[idx])
+	}
+
+	// Right-pad with spaces so the graph is exactly graphW wide.
+	// This ensures the graph grows left-to-right but the numbers stay pinned to the right edge.
+	padCount := graphW - len(vals)
+	if padCount > 0 {
+		spark.WriteString(strings.Repeat(" ", padCount))
 	}
 
 	latest := m.Latest()

@@ -8,6 +8,8 @@ import (
 
 	"ebpf/pkg/collector"
 	"ebpf/pkg/event"
+	"ebpf/pkg/graph"
+	"ebpf/pkg/percentile"
 )
 
 // ─── Tick messages ────────────────────────────────────────────────────────────
@@ -33,6 +35,14 @@ type DataBatch struct {
 	Net       []collector.NetSummary
 	Sys       []collector.SyscallSummary
 	Events    []Event
+
+	// Graph is a lock-free snapshot of the process graph, populated every
+	// collect cycle.  Nil in demo mode unless a demo graph is generated.
+	Graph *graph.Snapshot
+
+	// Percentiles holds the precalculated HDR histogram snapshots for all latency metrics.
+	// Keyed by metric key (e.g. "container_name:syscall_id").
+	Percentiles map[string]percentile.WindowSnapshots
 }
 
 // DataMsg wraps a DataBatch for delivery via the BubbleTea message bus.
@@ -59,6 +69,7 @@ type Event struct {
 	Container string
 	Message   string
 	Envelope  *event.EventEnvelope
+	Count     int // number of merged/throttled occurrences
 }
 
 // ─── Navigation messages ──────────────────────────────────────────────────────

@@ -48,7 +48,34 @@ func New(th theme.Theme) *View {
 func (v *View) Init() tea.Cmd { return nil }
 
 func (v *View) SetData(batch msg.DataBatch) {
-	v.events = append(v.events, batch.Events...)
+	for _, newEv := range batch.Events {
+		if newEv.Count == 0 {
+			newEv.Count = 1
+		}
+
+		merged := false
+		// Scan backwards through recent events (up to 5 seconds) to merge duplicates
+		for i := len(v.events) - 1; i >= 0; i-- {
+			oldEv := &v.events[i]
+			// Stop scanning if we go back more than 5 seconds to prevent over-merging
+			if newEv.At.Sub(oldEv.At) > 5*time.Second {
+				break
+			}
+
+			// Merge if exact same kind, container, and message content
+			if oldEv.Kind == newEv.Kind && oldEv.Container == newEv.Container && oldEv.Message == newEv.Message {
+				oldEv.Count += newEv.Count
+				oldEv.At = newEv.At // Update to latest occurrence timestamp
+				merged = true
+				break
+			}
+		}
+
+		if !merged {
+			v.events = append(v.events, newEv)
+		}
+	}
+
 	if len(v.events) > 2000 {
 		v.events = v.events[len(v.events)-2000:]
 	}
@@ -154,6 +181,9 @@ func (v *View) buildLines() []string {
 		}
 		ts := v.theme.TableDim.Render(ev.At.Format("15:04:05"))
 		styled := v.styleEvent(ev)
+		if ev.Count > 1 {
+			styled += v.theme.TableDim.Render(fmt.Sprintf(" (x%d)", ev.Count))
+		}
 		lines = append(lines, ts+" "+styled)
 	}
 	if len(lines) == 0 {
@@ -169,6 +199,9 @@ func (v *View) styleEvent(ev msg.Event) string {
 	case msg.EventKindError:
 		return v.theme.EventError.Render(ev.Message)
 	case msg.EventKindOOM:
+		if ev.Envelope != nil {
+			return v.formatSecurityEvent(ev.Envelope)
+		}
 		return v.theme.EventOOM.Render(ev.Message)
 	case msg.EventKindSlowSys:
 		return v.theme.EventSlowSys.Render(ev.Message)
@@ -198,6 +231,8 @@ func (v *View) formatSecurityEvent(env *event.EventEnvelope) string {
 		badge = v.styles.badgeEscape.Render(" ESCP ")
 	case event.EventTypeFork:
 		badge = v.theme.BadgeDim.Render(" FORK ")
+	case "oom_kill":
+		badge = v.styles.badgeOOM.Render(" OOM  ")
 	default:
 		badge = v.theme.BadgeDim.Render(" SEC  ")
 	}
@@ -254,6 +289,17 @@ func (v *View) formatSecurityEvent(env *event.EventEnvelope) string {
 				flags = "<none>"
 			}
 			b.WriteString(v.styles.metaAlert.Render(fmt.Sprintf("op: %v flags: %v", op, flags)))
+		case "oom_kill":
+			rss := env.Metadata["rss_kb"]
+			limitMB := int64(0)
+			if lim, ok := env.Metadata["limit_bytes"].(uint64); ok {
+				limitMB = int64(lim / (1024 * 1024))
+			} else if lim, ok := env.Metadata["limit_bytes"].(float64); ok {
+				limitMB = int64(lim / (1024 * 1024))
+			} else if lim, ok := env.Metadata["limit_bytes"].(int64); ok {
+				limitMB = lim / (1024 * 1024)
+			}
+			b.WriteString(v.styles.metaAlert.Render(fmt.Sprintf("rss: %vKB limit: %dMB", rss, limitMB)))
 		default:
 			// Just stringify if unhandled
 			b.WriteString(v.theme.TableDim.Render(fmt.Sprintf("%v", env.Metadata)))
@@ -270,6 +316,7 @@ type eventStyles struct {
 	badgeDNS    lipgloss.Style
 	badgePriv   lipgloss.Style
 	badgeEscape lipgloss.Style
+	badgeOOM    lipgloss.Style
 	container   lipgloss.Style
 	process     lipgloss.Style
 	metaExec    lipgloss.Style
@@ -284,6 +331,7 @@ func buildEventStyles(th theme.Theme) eventStyles {
 		badgeDNS:    base.Background(th.Green).Foreground(th.BgBase).Bold(true).Padding(0, 1),
 		badgePriv:   base.Background(th.Orange).Foreground(th.BgBase).Bold(true).Padding(0, 1),
 		badgeEscape: base.Background(th.Red).Foreground(th.BgBase).Bold(true).Padding(0, 1),
+		badgeOOM:    base.Background(th.Red).Foreground(th.BgBase).Bold(true).Padding(0, 1),
 		container:   base.Foreground(th.FgSubtle),
 		process:     base.Foreground(th.Fg),
 		metaExec:    base.Foreground(th.Cyan),
