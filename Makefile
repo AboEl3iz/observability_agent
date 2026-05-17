@@ -47,7 +47,7 @@ BPF_SRC_PROG  := ebpf/program.c
 BPF_OBJ_PROG  := ebpf/program.o
 
 
-.PHONY: all build bpf go-build test run run-all run-cpu-only run-files run-security run-tui run-tui-demo clean docker-build docker-run pin-path
+.PHONY: all build bpf go-build test run run-k8s run-all run-cpu-only run-files run-security run-tui run-tui-demo clean docker-build docker-run pin-path
 
 all: build
 
@@ -126,6 +126,24 @@ run: build
 		--net-bpf $(BPF_OBJ_NET) \
 		--sys-bpf $(BPF_OBJ_SYS) \
 		--containers-only
+
+# Run in Kubernetes mode
+run-k8s: build
+	sudo mkdir -p $(BPF_PIN_PATH)
+	sudo ./$(BINARY) \
+		--cpu-bpf     $(BPF_OBJ_CPU) \
+		--mem-bpf     $(BPF_OBJ_MEM) \
+		--io-bpf      $(BPF_OBJ_IO) \
+		--net-bpf     $(BPF_OBJ_NET) \
+		--sys-bpf     $(BPF_OBJ_SYS) \
+		--lineage-bpf $(BPF_OBJ_LINEAGE) \
+		--exec-bpf    $(BPF_OBJ_EXEC) \
+		--dns-bpf     $(BPF_OBJ_DNS) \
+		--privesc-bpf $(BPF_OBJ_PRIVESC) \
+		--escape-bpf  $(BPF_OBJ_ESCAPE) \
+		--containers-only \
+		--kubernetes \
+		--show-security
 
 # Show all cgroups (host processes, systemd slices, containers)
 run-all: build
@@ -210,7 +228,7 @@ clean:
 
 # ─── Docker targets ───────────────────────────────────────────────────────────
 docker-build:
-	docker build -t ebpf_observer:latest .
+	docker build -t ebpf-observer:latest .
 
 docker-run:
 	docker-compose up -d
