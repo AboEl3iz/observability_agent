@@ -232,9 +232,14 @@ SEC("tracepoint/sched/sched_process_exit")
 int trace_sched_exit(struct sched_process_exit_args *ctx) {
     u64 cgroup_id = bpf_get_current_cgroup_id();
     struct cpu_stats *s = get_or_create_stats(cgroup_id);
-    if (s && s->thread_count > 0) {
-        // Atomic decrement via fetch_and_add(-1), but guard against unsigned underflow
-        __sync_fetch_and_add(&s->thread_count, -1);
+    if (s) {
+        if (s->thread_count > 0) {
+            __sync_fetch_and_add(&s->thread_count, -1);
+            // Post-decrement guard: if a race caused underflow, s->thread_count wraps to max uint32
+            if (s->thread_count > 1000000) {
+                s->thread_count = 0;
+            }
+        }
     }
 
     // Clean up scratch state for this pid
