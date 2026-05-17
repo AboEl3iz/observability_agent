@@ -13,6 +13,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+typedef __u16 u16;
 typedef __u32 u32;
 typedef __u64 u64;
 
@@ -56,23 +57,32 @@ struct {
 // ---------------------------------------------------------------------------
 // tracepoint/oom/mark_victim
 //
-// Kernel tracepoint format (from /sys/kernel/debug/tracing/events/oom/mark_victim/format):
-//   field:int pid;      offset:8;  size:4;
-//   field:char comm[TASK_COMM_LEN]; offset:12; size:16;
-//   field:oom_flags_t oom_flags; ...
-//   field:long totalpages; ...
+// Modern Kernel tracepoint format (matched to user's system):
+//   field:int pid;                      offset:8;  size:4;
+//   field:__data_loc char[] comm;       offset:12; size:4;
+//   field:unsigned long total_vm;       offset:16; size:8;
+//   field:unsigned long anon_rss;       offset:24; size:8;
+//   field:unsigned long file_rss;       offset:32; size:8;
+//   field:unsigned long shmem_rss;      offset:40; size:8;
+//   field:uid_t uid;                    offset:48; size:4;
+//   field:unsigned long pgtables;       offset:56; size:8;
+//   field:short oom_score_adj;          offset:64; size:2;
 // ---------------------------------------------------------------------------
 struct mark_victim_args {
-    // trace_entry common fields (8 bytes)
     unsigned short common_type;
     unsigned char  common_flags;
     unsigned char  common_preempt_count;
     int            common_pid;
 
     int            pid;
-    char           comm[16];
-    unsigned long  totalpages;
-    int            oom_score_adj;
+    u32            comm; // __data_loc string index (offset/len)
+    unsigned long  total_vm;
+    unsigned long  anon_rss;
+    unsigned long  file_rss;
+    unsigned long  shmem_rss;
+    u32            uid;
+    unsigned long  pgtables;
+    short          oom_score_adj;
 };
 
 SEC("tracepoint/oom/mark_victim")
@@ -86,8 +96,12 @@ int trace_oom_mark_victim(struct mark_victim_args *ctx) {
     ev->cgroup_id    = cgroup_id;
     ev->victim_pid   = (u32)ctx->pid;
     ev->oom_score_adj = (u32)ctx->oom_score_adj;
-    ev->pages        = (u64)ctx->totalpages;
-    __builtin_memcpy(ev->comm, ctx->comm, sizeof(ev->comm));
+    // Total RSS pages is anon + file + shmem
+    ev->pages        = (u64)(ctx->anon_rss + ctx->file_rss + ctx->shmem_rss);
+
+    // Resolve __data_loc dynamic string for comm
+    u16 comm_offset = ctx->comm & 0xffff;
+    bpf_probe_read_kernel_str(ev->comm, sizeof(ev->comm), (void *)ctx + comm_offset);
 
     bpf_ringbuf_submit(ev, 0);
     return 0;
