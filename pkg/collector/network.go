@@ -180,6 +180,7 @@ func (n *NetworkCollector) CollectFlows() ([]ConnSample, error) {
 	var key ConnKey
 	var val ConnStats
 
+	var toDelete []ConnKey
 	iter := n.connMap.Iterate()
 	for iter.Next(&key, &val) {
 		name := fmt.Sprintf("cgroup:%d", key.CgroupID)
@@ -188,7 +189,7 @@ func (n *NetworkCollector) CollectFlows() ([]ConnSample, error) {
 			name = info.Name
 		} else {
 			// Dead container and history expired -> evict from BPF map to save kernel memory
-			_ = n.connMap.Delete(&key)
+			toDelete = append(toDelete, key)
 			continue
 		}
 
@@ -211,6 +212,10 @@ func (n *NetworkCollector) CollectFlows() ([]ConnSample, error) {
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("iterating conn_stats_map: %w", err)
+	}
+
+	for _, k := range toDelete {
+		_ = n.connMap.Delete(&k)
 	}
 	return flows, nil
 }

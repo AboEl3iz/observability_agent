@@ -78,6 +78,7 @@ func (c *SyscallCollector) Collect() ([]SyscallSummary, error) {
 	var key SyscallKey
 	var stats SyscallStats
 
+	var toDelete []SyscallKey
 	iter := c.statsMap.Iterate()
 	for iter.Next(&key, &stats) {
 		name := fmt.Sprintf("cgroup:%d", key.CgroupID)
@@ -86,7 +87,7 @@ func (c *SyscallCollector) Collect() ([]SyscallSummary, error) {
 			name = info.Name
 		} else {
 			// Dead container and history expired -> evict from BPF map to save kernel memory
-			_ = c.statsMap.Delete(&key)
+			toDelete = append(toDelete, key)
 			continue
 		}
 
@@ -105,6 +106,10 @@ func (c *SyscallCollector) Collect() ([]SyscallSummary, error) {
 	}
 	if err := iter.Err(); err != nil {
 		return nil, err
+	}
+
+	for _, k := range toDelete {
+		_ = c.statsMap.Delete(&k)
 	}
 
 	return summaries, nil
