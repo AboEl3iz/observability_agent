@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ebpf-observer
+  namespace: monitoring
+  labels:
+    app: ebpf-observer
+    release: prometheus
+spec:
+  # Scraping services in the kube-system namespace
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app: ebpf-observer
+  endpoints:
+    - port: metrics
+      interval: 5s
+      path: /metrics
+      honorLabels: true

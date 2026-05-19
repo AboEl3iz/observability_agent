@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-observer
+  namespace: kube-system
+  labels:
+    app: ebpf-observer
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-observer
+  template:
+    metadata:
+      labels:
+        app: ebpf-observer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+
+      serviceAccountName: ebpf-observer
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        # Run on master/control-plane nodes as well
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: ebpf-observer
+          image: ebpf-observer:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - BPF
+                - PERFMON
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - NET_ADMIN
+                - DAC_READ_SEARCH
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          args:
+            - "--cpu-bpf=/app/ebpf/cpu.o"
+            - "--mem-bpf=/app/ebpf/memory.o"
+            - "--io-bpf=/app/ebpf/io.o"
+            - "--net-bpf=/app/ebpf/network.o"
+            - "--sys-bpf=/app/ebpf/syscall.o"
+            - "--lineage-bpf=/app/ebpf/lineage.o"
+            - "--exec-bpf=/app/ebpf/exec.o"
+            - "--dns-bpf=/app/ebpf/dns.o"
+            - "--privesc-bpf=/app/ebpf/privesc.o"
+            - "--escape-bpf=/app/ebpf/escape.o"
+            - "--containers-only"
+            - "--show-security"
+            - "--kubernetes"
+          ports:
+            - name: metrics
+              containerPort: 8080
+              hostPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: bpffs
+              mountPath: /sys/fs/bpf
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+            - name: tracefs
+              mountPath: /sys/kernel/tracing
+            - name: modules
+              mountPath: /lib/modules
+              readOnly: true
+      volumes:
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: bpffs
+          hostPath:
+            path: /sys/fs/bpf
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+        - name: tracefs
+          hostPath:
+            path: /sys/kernel/tracing
+        - name: modules
+          hostPath:
+            path: /lib/modules

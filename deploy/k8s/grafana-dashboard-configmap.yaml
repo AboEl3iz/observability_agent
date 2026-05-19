@@ -1,0 +1,2479 @@
+apiVersion: v1
+data:
+  ebpf-observer.json: |-
+    {
+      "__inputs": [
+        {
+          "name": "DS_PROMETHEUS",
+          "label": "Prometheus",
+          "type": "datasource",
+          "pluginId": "prometheus",
+          "pluginName": "Prometheus"
+        }
+      ],
+      "__requires": [
+        {
+          "type": "grafana",
+          "id": "grafana",
+          "name": "Grafana",
+          "version": "9.0.0"
+        },
+        {
+          "type": "datasource",
+          "id": "prometheus",
+          "name": "Prometheus",
+          "version": "1.0.0"
+        },
+        {
+          "type": "panel",
+          "id": "timeseries",
+          "name": "Time series",
+          "version": ""
+        },
+        {
+          "type": "panel",
+          "id": "stat",
+          "name": "Stat",
+          "version": ""
+        },
+        {
+          "type": "panel",
+          "id": "table",
+          "name": "Table",
+          "version": ""
+        }
+      ],
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "enable": true,
+            "hide": true,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "iconColor": "rgba(0,211,255,1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "description": "eBPF Observability Agent \u2014 CPU \u00b7 Memory \u00b7 I/O \u00b7 Network \u00b7 Syscalls \u00b7 Security",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "title": "\ud83d\udcca Overview",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 2,
+          "type": "stat",
+          "title": "Active Containers",
+          "gridPos": {
+            "x": 0,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "blue",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "count(ebpf_cpu_seconds{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 3,
+          "type": "stat",
+          "title": "CPU Seconds / poll",
+          "gridPos": {
+            "x": 4,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "purple",
+                "mode": "fixed"
+              },
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(ebpf_cpu_seconds{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 4,
+          "type": "stat",
+          "title": "Total RSS",
+          "gridPos": {
+            "x": 8,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "green",
+                "mode": "fixed"
+              },
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(ebpf_memory_rss_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 5,
+          "type": "stat",
+          "title": "Active Net Flows",
+          "gridPos": {
+            "x": 12,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "orange",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(ebpf_net_active_flows{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 6,
+          "type": "stat",
+          "title": "Security Events/5m",
+          "gridPos": {
+            "x": 16,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "red",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_security_events_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 7,
+          "type": "stat",
+          "title": "OOM Kills",
+          "gridPos": {
+            "x": 20,
+            "y": 1,
+            "w": 4,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "dark-red",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_oom_kills_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "id": 8,
+          "title": "\u2699\ufe0f CPU",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 9,
+          "type": "timeseries",
+          "title": "CPU Seconds / poll (by container)",
+          "gridPos": {
+            "x": 0,
+            "y": 6,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "s",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_cpu_seconds{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 10,
+          "type": "timeseries",
+          "title": "RunQueue Latency (by container)",
+          "gridPos": {
+            "x": 12,
+            "y": 6,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "s",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_runq_latency_seconds{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 11,
+          "type": "timeseries",
+          "title": "Context Switches / s",
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_ctx_switches_per_sec{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 12,
+          "type": "timeseries",
+          "title": "Thread Count",
+          "gridPos": {
+            "x": 8,
+            "y": 14,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_threads{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 13,
+          "type": "timeseries",
+          "title": "NUMA Balance %",
+          "gridPos": {
+            "x": 16,
+            "y": 14,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "percent",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_numa_local_pct{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} local",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_numa_remote_pct{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} remote",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "id": 14,
+          "title": "\ud83e\udde0 Memory",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 15,
+          "type": "timeseries",
+          "title": "Memory RSS (by container)",
+          "gridPos": {
+            "x": 0,
+            "y": 23,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "bytes",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_rss_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 16,
+          "type": "timeseries",
+          "title": "Memory Limit Utilisation %",
+          "gridPos": {
+            "x": 12,
+            "y": 23,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "percent",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_rss_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"} / clamp_min(ebpf_memory_limit_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"},1) * 100",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 17,
+          "type": "timeseries",
+          "title": "Minor Page Faults / s",
+          "gridPos": {
+            "x": 0,
+            "y": 31,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_page_faults_minor_per_sec{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 18,
+          "type": "timeseries",
+          "title": "Major Page Faults / s",
+          "gridPos": {
+            "x": 8,
+            "y": 31,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_page_faults_major_per_sec{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 19,
+          "type": "timeseries",
+          "title": "PSI Memory Pressure avg10 %",
+          "gridPos": {
+            "x": 16,
+            "y": 31,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "percent",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_psi_some_pct{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} some%",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_psi_full_pct{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} full%",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 20,
+          "type": "timeseries",
+          "title": "TLB Miss Rate (minor faults/s)",
+          "gridPos": {
+            "x": 0,
+            "y": 39,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_tlb_miss_rate{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 21,
+          "type": "table",
+          "title": "Memory Snapshot (VIRT / RSS / PSS / Shared)",
+          "gridPos": {
+            "x": 8,
+            "y": 39,
+            "w": 16,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "sortBy": [
+              {
+                "displayName": "RSS",
+                "desc": true
+              }
+            ],
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_virt_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "VIRT",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_rss_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "RSS",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_pss_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "PSS",
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_memory_shared_bytes{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "Shared",
+              "refId": "D"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {}
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 47
+          },
+          "id": 22,
+          "title": "\ud83d\udcbe Disk I/O",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 23,
+          "type": "timeseries",
+          "title": "Disk Read B/s",
+          "gridPos": {
+            "x": 0,
+            "y": 48,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "Bps",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_disk_read_bytes_per_sec{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 24,
+          "type": "timeseries",
+          "title": "Disk Write B/s",
+          "gridPos": {
+            "x": 12,
+            "y": 48,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "Bps",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_disk_write_bytes_per_sec{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 25,
+          "type": "timeseries",
+          "title": "Disk Read Latency",
+          "gridPos": {
+            "x": 0,
+            "y": 56,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "ms",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_disk_read_latency_ms{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 26,
+          "type": "timeseries",
+          "title": "Disk Write Latency",
+          "gridPos": {
+            "x": 12,
+            "y": 56,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "ms",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_disk_write_latency_ms{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 64
+          },
+          "id": 27,
+          "title": "\ud83c\udf10 Network",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 28,
+          "type": "timeseries",
+          "title": "Active Flows",
+          "gridPos": {
+            "x": 0,
+            "y": 65,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_net_active_flows{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 29,
+          "type": "timeseries",
+          "title": "Connection States",
+          "gridPos": {
+            "x": 8,
+            "y": 65,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_net_established{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} estab",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_net_time_wait{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} tw",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_net_close_wait{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}} cw",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 30,
+          "type": "timeseries",
+          "title": "TCP Retransmits",
+          "gridPos": {
+            "x": 16,
+            "y": 65,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_net_retransmits_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 73
+          },
+          "id": 31,
+          "title": "\ud83d\udd27 Syscalls",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 32,
+          "type": "timeseries",
+          "title": "Syscall Count / poll",
+          "gridPos": {
+            "x": 0,
+            "y": 74,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "topk(10, ebpf_syscall_count{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "legendFormat": "{{container}}/{{syscall}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 33,
+          "type": "timeseries",
+          "title": "Syscall Failures / poll",
+          "gridPos": {
+            "x": 12,
+            "y": 74,
+            "w": 6,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "ebpf_syscall_failures{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"} > 0",
+              "legendFormat": "{{container}}/{{syscall}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 34,
+          "type": "timeseries",
+          "title": "Syscall Avg Latency",
+          "gridPos": {
+            "x": 18,
+            "y": 74,
+            "w": 6,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "ms",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "topk(10, ebpf_syscall_latency_ms{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"})",
+              "legendFormat": "{{container}}/{{syscall}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 82
+          },
+          "id": 35,
+          "title": "\ud83d\udd10 Security & Events",
+          "type": "row",
+          "panels": []
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 36,
+          "type": "stat",
+          "title": "OOM Kills / 5m",
+          "gridPos": {
+            "x": 0,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "dark-red",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_oom_kills_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 37,
+          "type": "stat",
+          "title": "DNS Queries / 5m",
+          "gridPos": {
+            "x": 4,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "blue",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_dns_queries_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 38,
+          "type": "stat",
+          "title": "Process Forks / 5m",
+          "gridPos": {
+            "x": 8,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "green",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_lineage_forks_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 39,
+          "type": "stat",
+          "title": "Exec Events / 5m",
+          "gridPos": {
+            "x": 12,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "orange",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_exec_events_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 40,
+          "type": "stat",
+          "title": "Priv Escalations / 5m",
+          "gridPos": {
+            "x": 16,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "dark-orange",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_privilege_escalations_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 41,
+          "type": "stat",
+          "title": "Escape Indicators / 5m",
+          "gridPos": {
+            "x": 20,
+            "y": 83,
+            "w": 4,
+            "h": 3
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "fixedColor": "dark-red",
+                "mode": "fixed"
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "graphMode": "area",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(increase(ebpf_escape_indicators_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 42,
+          "type": "timeseries",
+          "title": "Security Events by Type",
+          "gridPos": {
+            "x": 0,
+            "y": 86,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (type)(increase(ebpf_security_events_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[$__rate_interval]))",
+              "legendFormat": "{{type}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 43,
+          "type": "timeseries",
+          "title": "DNS Queries by Type",
+          "gridPos": {
+            "x": 12,
+            "y": 86,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (query_type)(increase(ebpf_dns_queries_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[$__rate_interval]))",
+              "legendFormat": "{{query_type}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 44,
+          "type": "timeseries",
+          "title": "OOM Kills over time",
+          "gridPos": {
+            "x": 0,
+            "y": 94,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (container)(increase(ebpf_oom_kills_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[$__rate_interval]))",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 45,
+          "type": "timeseries",
+          "title": "Exec Events over time",
+          "gridPos": {
+            "x": 8,
+            "y": 94,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (container)(increase(ebpf_exec_events_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[$__rate_interval]))",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "id": 46,
+          "type": "timeseries",
+          "title": "Privilege Escalations",
+          "gridPos": {
+            "x": 16,
+            "y": 94,
+            "w": 8,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "calcs": [
+                "mean",
+                "max",
+                "last"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (container)(increase(ebpf_privilege_escalations_total{instance=~\"$node\", namespace=~\"$namespace\", container=~\"$container\"}[$__rate_interval]))",
+              "legendFormat": "{{container}}",
+              "refId": "A"
+            }
+          ]
+        }
+      ],
+      "refresh": "5s",
+      "schemaVersion": 38,
+      "tags": [
+        "ebpf",
+        "observability",
+        "containers",
+        "kubernetes",
+        "security"
+      ],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "name": "datasource",
+            "options": [],
+            "query": "prometheus",
+            "refresh": 1,
+            "type": "datasource",
+            "label": "Data Source"
+          },
+          {
+            "current": {},
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "definition": "label_values(ebpf_cpu_seconds, instance)",
+            "hide": 0,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true,
+            "name": "node",
+            "options": [],
+            "query": {
+              "query": "label_values(ebpf_cpu_seconds, instance)",
+              "refId": "S"
+            },
+            "refresh": 2,
+            "regex": "",
+            "sort": 1,
+            "type": "query",
+            "label": "Node"
+          },
+          {
+            "current": {},
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "definition": "label_values(ebpf_cpu_seconds{instance=~\"$node\"}, namespace)",
+            "hide": 0,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true,
+            "name": "namespace",
+            "options": [],
+            "query": {
+              "query": "label_values(ebpf_cpu_seconds{instance=~\"$node\"}, namespace)",
+              "refId": "S"
+            },
+            "refresh": 2,
+            "regex": "",
+            "sort": 1,
+            "type": "query",
+            "label": "Namespace"
+          },
+          {
+            "current": {},
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "definition": "label_values(ebpf_cpu_seconds{instance=~\"$node\", namespace=~\"$namespace\"}, container)",
+            "hide": 0,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true,
+            "name": "container",
+            "options": [],
+            "query": {
+              "query": "label_values(ebpf_cpu_seconds{instance=~\"$node\", namespace=~\"$namespace\"}, container)",
+              "refId": "S"
+            },
+            "refresh": 2,
+            "regex": "",
+            "sort": 1,
+            "type": "query",
+            "label": "Container"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "eBPF Observability Agent",
+      "uid": "ebpf-observer-v1",
+      "version": 1
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    grafana_dashboard: '1'
+  name: ebpf-observer-dashboard
+  namespace: monitoring

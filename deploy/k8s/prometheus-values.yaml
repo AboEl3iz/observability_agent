@@ -1,0 +1,18 @@
+# Custom Helm values for kube-prometheus-stack
+# Deploy in 'monitoring' namespace
+
+prometheus:
+  prometheusSpec:
+    # Discover ServiceMonitors, PodMonitors, and PrometheusRules across all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+grafana:
+  sidecar:
+    dashboards:
+      # Automatically import dashboards defined in ConfigMaps
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
