@@ -6,7 +6,7 @@
 //   tracepoint/exceptions/page_fault_user — user-space page faults (RSS proxy)
 //
 // Ring buffer: oom_events (one entry per OOM kill)
-// Hash map:    page_fault_map  (per-cgroup cumulative fault counts)
+// Hash map:    page_fault_map  (per-cgroup cumulative minor + major fault counts)
 
 // clang-format off
 #include <linux/bpf.h>
@@ -31,9 +31,12 @@ struct oom_event {
     char comm[16];       // victim command name
 };
 
-// Per-cgroup page fault accumulator
+// Per-cgroup page fault accumulator — minor and major separated
+// Major faults = demand-paging (page not present, requires disk I/O)
+// Minor faults = anon/CoW/protection violations (no disk I/O)
 struct pf_stats {
-    u64 faults; // cumulative minor+major user faults
+    u64 minor_faults; // cumulative minor user faults
+    u64 major_faults; // cumulative major (demand-paging) user faults
 };
 
 // ---------------------------------------------------------------------------
@@ -110,8 +113,18 @@ int trace_oom_mark_victim(struct mark_victim_args *ctx) {
 // ---------------------------------------------------------------------------
 // tracepoint/exceptions/page_fault_user
 //
-// Fires on every user-space page fault (minor + major).
-// We use this as a proxy for RSS growth / swap-in activity.
+// Fires on every user-space page fault.
+//
+// x86 page-fault error_code bits (written to CR2):
+//   bit 0 (PF_PROT)  : 1 = protection violation (minor: anon/CoW, no disk I/O)
+//                      0 = page not present     (MAJOR: demand-paging, needs disk)
+//   bit 1 (PF_WRITE) : write access triggered the fault
+//   bit 2 (PF_USER)  : fault from user mode
+//   bit 4 (PF_INSTR) : instruction fetch fault
+//
+// Classification:
+//   PF_PROT clear (0) → page not in memory → MAJOR fault (disk I/O required)
+//   PF_PROT set   (1) → protection/CoW fault → MINOR fault (no disk I/O)
 // ---------------------------------------------------------------------------
 struct page_fault_user_args {
     unsigned short common_type;
@@ -124,17 +137,30 @@ struct page_fault_user_args {
     unsigned long  error_code;
 };
 
+// PF_PROT: protection fault bit in x86 error_code
+#define PF_PROT 0x1UL
+
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault_user(struct page_fault_user_args *ctx) {
     u64 cgroup_id = bpf_get_current_cgroup_id();
 
     struct pf_stats *s = bpf_map_lookup_elem(&page_fault_map, &cgroup_id);
     if (!s) {
-        struct pf_stats zero = { .faults = 1 };
+        struct pf_stats zero = {};
+        if (ctx->error_code & PF_PROT) {
+            zero.minor_faults = 1;
+        } else {
+            zero.major_faults = 1;
+        }
         bpf_map_update_elem(&page_fault_map, &cgroup_id, &zero, BPF_NOEXIST);
         return 0;
     }
-    __sync_fetch_and_add(&s->faults, 1);
+
+    if (ctx->error_code & PF_PROT) {
+        __sync_fetch_and_add(&s->minor_faults, 1);
+    } else {
+        __sync_fetch_and_add(&s->major_faults, 1);
+    }
     return 0;
 }
 
