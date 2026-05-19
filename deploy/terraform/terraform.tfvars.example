@@ -1,0 +1,40 @@
+# Example terraform.tfvars for ebpf-observer EKS testing
+#
+# Copy this file to terraform.tfvars and edit as needed.
+# terraform.tfvars is gitignored — safe to put personal values here.
+
+# AWS region (us-east-1 is cheapest for most services)
+aws_region = "us-east-1"
+
+# EKS cluster identifier
+cluster_name = "ebpf-observer-test"
+
+# Kubernetes version — check aws eks describe-addon-versions for latest
+kubernetes_version = "1.30"
+
+# Instance type for worker nodes
+# t3.medium = 2 vCPU / 4 GB — minimum viable for eBPF + kubelet
+# t3.small  = 2 vCPU / 2 GB — may OOM under heavy BPF load
+node_instance_type = "t3.medium"
+
+# Number of worker nodes
+node_desired_count = 2
+node_min_count     = 1
+node_max_count     = 2
+
+# Root disk size per node (GB)
+node_disk_size_gb = 30
+
+# Restrict Prometheus scraping to your dev machine IP only
+# Find your IP: curl -s ifconfig.me
+# Example: prometheus_scrape_cidrs = ["203.0.113.10/32"]
+# Set to [] to disable the SG rule and use kubectl port-forward only (recommended)
+prometheus_scrape_cidrs = ["0.0.0.0/0"]
+
+# Resource tags
+tags = {
+  Project     = "ebpf-observer"
+  Environment = "testing"
+  ManagedBy   = "terraform"
+  Owner       = "your-name"
+}
