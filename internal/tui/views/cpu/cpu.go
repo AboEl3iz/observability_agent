@@ -19,11 +19,13 @@ import (
 
 // row is the typed row used by this view's VirtualTable.
 type row struct {
-	Container string
-	CPUSec    float64
-	RunqMs    float64
-	CtxPerSec float64
-	Threads   int
+	Container  string
+	CPUSec     float64
+	RunqMs     float64
+	CtxPerSec  float64
+	Threads    int
+	NUMALoc    float64 // % NUMA-local scheduling
+	NUMARemote float64 // % NUMA-remote (cross-NUMA migrations)
 }
 
 // View implements views.View for the CPU tab.
@@ -62,6 +64,24 @@ func New(th theme.Theme) *View {
 			SortLess: func(a, b table.Row) bool { return a.(row).Threads > b.(row).Threads },
 			Format:   func(r table.Row, _ int) string { return fmt.Sprintf("%d", r.(row).Threads) },
 		},
+		{Title: "NUMA Loc%", Width: 10, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).NUMALoc > b.(row).NUMALoc },
+			Format: func(r table.Row, _ int) string {
+				if r.(row).NUMALoc == 0 && r.(row).NUMARemote == 0 {
+					return "—"
+				}
+				return fmt.Sprintf("%.1f", r.(row).NUMALoc)
+			},
+		},
+		{Title: "NUMA Rem%", Width: 10, Sortable: true, Align: "right",
+			SortLess: func(a, b table.Row) bool { return a.(row).NUMARemote > b.(row).NUMARemote },
+			Format: func(r table.Row, _ int) string {
+				if r.(row).NUMALoc == 0 && r.(row).NUMARemote == 0 {
+					return "—"
+				}
+				return fmt.Sprintf("%.1f", r.(row).NUMARemote)
+			},
+		},
 	}
 	v := &View{
 		tbl:    table.New(cols, th),
@@ -83,11 +103,13 @@ func (v *View) SetData(batch msg.DataBatch) {
 	rows := make([]table.Row, 0, len(samples))
 	for _, s := range samples {
 		rows = append(rows, row{
-			Container: s.ContainerName,
-			CPUSec:    s.CPUSeconds,
-			RunqMs:    s.RunqLatencySeconds * 1000,
-			CtxPerSec: s.CtxSwitchesPerSec,
-			Threads:   int(s.ThreadCount),
+			Container:  s.ContainerName,
+			CPUSec:     s.CPUSeconds,
+			RunqMs:     s.RunqLatencySeconds * 1000,
+			CtxPerSec:  s.CtxSwitchesPerSec,
+			Threads:    int(s.ThreadCount),
+			NUMALoc:    s.NUMALocalPct,
+			NUMARemote: s.NUMARemotePct,
 		})
 	}
 	v.tbl.SetRows(rows)
@@ -114,7 +136,7 @@ func (v *View) Focus() { v.focused = true; v.tbl.Focus() }
 func (v *View) Blur()  { v.focused = false; v.tbl.Blur() }
 
 func (v *View) StatusLine() string {
-	return "M1 CPU  ·  s/S sort  ·  / filter  ·  enter detail"
+	return "M1 CPU  ·  s/S sort  ·  / filter  ·  enter detail  ·  NUMA=cpu.stat migrations proxy"
 }
 
 func (v *View) SelectedContainer() string {
