@@ -95,6 +95,7 @@ func main() {
 	showSlowSys := flag.Bool("show-slow-sys", false, "stream slow syscall events to stderr (M6)")
 	showSecurity := flag.Bool("show-security", false, "stream security events to stderr (Phase 1–5)")
 	topN := flag.Int("top", 0, "limit each table to top N rows (0 = all)")
+	richMem := flag.Bool("rich-mem", false, "enable VIRT/PSS/Shared collection via /proc/<pid>/smaps_rollup (adds I/O per poll)")
 	k8sSupport := flag.Bool("kubernetes", false, "enable kubernetes support")
 	flag.Parse()
 
@@ -164,6 +165,11 @@ func main() {
 		logger.Warn("cgroup resolver init failed — IDs only", "err", err)
 		resolver = &cgroup.Resolver{}
 	}
+	// K8s mode: faster refresh (2s) for pod churn + kubelet enrichment
+	if *k8sSupport {
+		resolver.SetK8sMode(true)
+		logger.Info("Kubernetes mode enabled — resolver refresh accelerated to 2s")
+	}
 
 	// ── M1: CPU (cpu.o) ───────────────────────────────────────────────────
 	cpuColl, cpuLinks, cpuRawColl, err := loadCPU(*cpuBPF, resolver, logger)
@@ -182,6 +188,7 @@ func main() {
 		logger.Warn("M2 Memory init failed — memory metrics disabled", "err", err)
 	}
 	if memColl != nil {
+		memColl.RichMem = *richMem
 		defer memColl.Close()
 	}
 	defer closeLinks(memLinks)
@@ -231,8 +238,9 @@ func main() {
 
 	// Always wrap with Prometheus metrics even if not logging to stderr
 	secWriter = &exporter.PrometheusSecurityEventWriter{
-		Inner:    secWriter,
-		Exporter: promExporter,
+		Inner:          secWriter,
+		Exporter:       promExporter,
+		ContainersOnly: *containersOnly,
 	}
 
 	// ── Phase 2 → Phase 1: Exec loads first to source process_tree_map ────
@@ -370,7 +378,7 @@ func main() {
 
 			if memColl != nil {
 				printMemTable(memColl, logger, cfg, promExporter)
-				drainOOMEvents(memColl, logger, promExporter)
+				drainOOMEvents(memColl, logger, cfg, promExporter)
 			}
 
 			if ioColl != nil {
@@ -1053,15 +1061,6 @@ func printCpuTable(c *collector.CpuCollector, log *slog.Logger, cfg displayConfi
 		return
 	}
 
-	if prom != nil {
-		prom.UpdateCPU(samples)
-	}
-
-	// Sort by CPU time descending
-	sort.Slice(samples, func(i, j int) bool {
-		return samples[i].CPUSeconds > samples[j].CPUSeconds
-	})
-
 	// Filter to containers only if requested
 	if cfg.containersOnly {
 		filtered := samples[:0]
@@ -1073,27 +1072,43 @@ func printCpuTable(c *collector.CpuCollector, log *slog.Logger, cfg displayConfi
 		samples = filtered
 	}
 
+	if prom != nil {
+		prom.UpdateCPU(samples)
+	}
+
+	// Sort by CPU time descending
+	sort.Slice(samples, func(i, j int) bool {
+		return samples[i].CPUSeconds > samples[j].CPUSeconds
+	})
+
 	samples = applyTop(samples, cfg.topN)
 
 	now := time.Now().Format("15:04:05")
-	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  M1: CPU Observer  [%s]                                             ║\n", now)
-	fmt.Printf("╠══════════════════════════╦════════════╦═══════════════╦══════════╦═══════╣\n")
-	fmt.Printf("║ Container                ║ CPU (s/Δt) ║ RunQ lat (ms) ║ ctx sw/s ║ thrds ║\n")
-	fmt.Printf("╠══════════════════════════╬════════════╬═══════════════╬══════════╬═══════╣\n")
+	fmt.Printf("\n╔═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M1: CPU Observer  [%s]                                                                                             ║\n", now)
+	fmt.Printf("╠═══════════════════════════════════════════════╦════════════╦═══════════════╦══════════╦═══════╦══════════╦══════════╣\n")
+	fmt.Printf("║ Container                                     ║ CPU (s/Δt) ║ RunQ lat (ms) ║ ctx sw/s ║ thrds ║ NUMA Loc ║ NUMA Rem ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════╬════════════╬═══════════════╬══════════╬═══════╬══════════╬══════════╣\n")
 	if len(samples) == 0 {
-		fmt.Printf("║ (no container activity — start a Docker container to see data here)       ║\n")
+		fmt.Printf("║ (no container activity — start a Docker container to see data here)                                                     ║\n")
 	}
 	for _, s := range samples {
-		fmt.Printf("║ %-24s ║ %10.4f ║ %13.3f ║ %8.1f ║ %5d ║\n",
-			truncate(s.ContainerName, 24),
+		numaLoc, numaRem := "—       ", "—       "
+		if s.NUMALocalPct != 0 || s.NUMARemotePct != 0 {
+			numaLoc = fmt.Sprintf("%6.1f%%", s.NUMALocalPct)
+			numaRem = fmt.Sprintf("%6.1f%%", s.NUMARemotePct)
+		}
+		fmt.Printf("║ %-45s ║ %10.4f ║ %13.3f ║ %8.1f ║ %5d ║ %8s ║ %8s ║\n",
+			truncate(s.ContainerName, 45),
 			s.CPUSeconds,
 			s.RunqLatencySeconds*1000,
 			s.CtxSwitchesPerSec,
 			s.ThreadCount,
+			numaLoc,
+			numaRem,
 		)
 	}
-	fmt.Printf("╚══════════════════════════╩════════════╩═══════════════╩══════════╩═══════╝\n")
+	fmt.Printf("╚═══════════════════════════════════════════════╩════════════╩═══════════════╩══════════╩═══════╩══════════╩══════════╝\n")
 }
 
 func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
@@ -1102,14 +1117,6 @@ func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayCo
 		log.Error("Memory collect error", "err", err)
 		return
 	}
-
-	if prom != nil {
-		prom.UpdateMemory(samples)
-	}
-
-	sort.Slice(samples, func(i, j int) bool {
-		return samples[i].MemoryBytes > samples[j].MemoryBytes
-	})
 
 	if cfg.containersOnly {
 		filtered := samples[:0]
@@ -1121,40 +1128,65 @@ func printMemTable(c *collector.MemoryCollector, log *slog.Logger, cfg displayCo
 		samples = filtered
 	}
 
+	if prom != nil {
+		prom.UpdateMemory(samples)
+	}
+
+	sort.Slice(samples, func(i, j int) bool {
+		return samples[i].MemoryBytes > samples[j].MemoryBytes
+	})
+
 	samples = applyTop(samples, cfg.topN)
 
 	now := time.Now().Format("15:04:05")
-	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  M2: Memory Observer  [%s]                                                  ║\n", now)
-	fmt.Printf("╠══════════════════════════╦═════════════╦═════════════╦══════════════════════╣\n")
-	fmt.Printf("║ Container                ║  RSS (MB)   ║ Limit (MB)  ║ Page Faults/s        ║\n")
-	fmt.Printf("╠══════════════════════════╬═════════════╬═════════════╬══════════════════════╣\n")
+	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M2: Memory Observer  [%s]                                                                                                                        ║\n", now)
+	fmt.Printf("╠═══════════════════════════════════════════════╦══════════╦══════════╦══════════╦══════════╦═════════╦═════════╦═══════╦═══════╦══════════╦══════════╣\n")
+	fmt.Printf("║ Container                                     ║ VIRT(MB) ║  RSS(MB) ║  PSS(MB) ║ Shrd(MB) ║ Maj/s   ║ Min/s   ║PSI-sm ║PSI-fl ║TLBMiss/s ║Limit(MB) ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════╬══════════╬══════════╬══════════╬══════════╬═════════╬═════════╬═══════╬═══════╬══════════╬══════════╣\n")
 	if len(samples) == 0 {
-		fmt.Printf("║ (no container activity — start a Docker container to see data here)          ║\n")
+		fmt.Printf("║ (no container activity — start a Docker container to see data here)                                                                                ║\n")
 	}
 	for _, s := range samples {
 		rssMB := float64(s.MemoryBytes) / (1024 * 1024)
+		virtStr := "—       "
+		if s.VirtBytes > 0 {
+			virtStr = fmt.Sprintf("%8.1f", float64(s.VirtBytes)/(1024*1024))
+		}
+		pssStr := "—       "
+		if s.PSSBytes > 0 {
+			pssStr = fmt.Sprintf("%8.1f", float64(s.PSSBytes)/(1024*1024))
+		}
+		sharedStr := "—       "
+		if s.SharedBytes > 0 {
+			sharedStr = fmt.Sprintf("%8.1f", float64(s.SharedBytes)/(1024*1024))
+		}
 		limStr := "unlimited"
 		if s.MemoryLimitBytes > 0 {
-			limStr = fmt.Sprintf("%.1f", float64(s.MemoryLimitBytes)/(1024*1024))
+			limStr = fmt.Sprintf("%8.1f", float64(s.MemoryLimitBytes)/(1024*1024))
 		}
-		fmt.Printf("║ %-24s ║ %11.2f ║ %11s ║ %20.1f ║\n",
-			truncate(s.ContainerName, 24),
-			rssMB,
+		fmt.Printf("║ %-45s ║ %8s ║ %8.2f ║ %8s ║ %8s ║ %7.1f ║ %7.1f ║ %5.2f ║ %5.2f ║ %8.1f ║ %8s ║\n",
+			truncate(s.ContainerName, 45),
+			virtStr, rssMB, pssStr, sharedStr,
+			s.MajorPerSec, s.MinorPerSec,
+			s.PSISome, s.PSIFull,
+			s.TLBMissRate,
 			limStr,
-			s.FaultsPerSec,
 		)
 	}
-	fmt.Printf("╚══════════════════════════╩═════════════╩═════════════╩══════════════════════╝\n")
+	fmt.Printf("╚═══════════════════════════════════════════════╩══════════╩══════════╩══════════╩══════════╩═════════╩═════════╩═══════╩═══════╩══════════╩══════════╝\n")
 }
 
-func drainOOMEvents(c *collector.MemoryCollector, log *slog.Logger, prom *exporter.PrometheusExporter) {
+func drainOOMEvents(c *collector.MemoryCollector, log *slog.Logger, cfg displayConfig, prom *exporter.PrometheusExporter) {
 	events, err := c.ReadOOMEvents()
 	if err != nil {
 		log.Error("OOM event read error", "err", err)
 		return
 	}
 	for _, ev := range events {
+		if cfg.containersOnly && !isContainer(ev.ContainerName) {
+			continue
+		}
 		if prom != nil {
 			prom.UpdateOOM(ev.ContainerName)
 		}
@@ -1179,15 +1211,6 @@ func printIOTable(c *collector.IoCollector, log *slog.Logger, cfg displayConfig,
 		return
 	}
 
-	if prom != nil {
-		prom.UpdateIO(samples)
-	}
-
-	sort.Slice(samples, func(i, j int) bool {
-		return (samples[i].ReadBytesPerSec + samples[i].WriteBytesPerSec) >
-			(samples[j].ReadBytesPerSec + samples[j].WriteBytesPerSec)
-	})
-
 	if cfg.containersOnly {
 		filtered := samples[:0]
 		for _, s := range samples {
@@ -1198,27 +1221,36 @@ func printIOTable(c *collector.IoCollector, log *slog.Logger, cfg displayConfig,
 		samples = filtered
 	}
 
+	if prom != nil {
+		prom.UpdateIO(samples)
+	}
+
+	sort.Slice(samples, func(i, j int) bool {
+		return (samples[i].ReadBytesPerSec + samples[i].WriteBytesPerSec) >
+			(samples[j].ReadBytesPerSec + samples[j].WriteBytesPerSec)
+	})
+
 	samples = applyTop(samples, cfg.topN)
 
 	now := time.Now().Format("15:04:05")
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  M3: I/O Observer  [%s]                                                      ║\n", now)
-	fmt.Printf("╠══════════════════════════╦══════════════╦══════════════╦══════════╦════════════╣\n")
-	fmt.Printf("║ Container                ║  Read KB/s   ║ Write KB/s   ║ R lat ms ║ W lat ms  ║\n")
-	fmt.Printf("╠══════════════════════════╬══════════════╬══════════════╬══════════╬════════════╣\n")
+	fmt.Printf("\n╔═════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M3: I/O Observer  [%s]                                                               ║\n", now)
+	fmt.Printf("╠═══════════════════════════════════════════════╦══════════════╦══════════════╦══════════╦════════════╣\n")
+	fmt.Printf("║ Container                                     ║  Read KB/s   ║ Write KB/s   ║ R lat ms ║ W lat ms  ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════╬══════════════╬══════════════╬══════════╬════════════╣\n")
 	if len(samples) == 0 {
-		fmt.Printf("║ (no container I/O activity — run a container with disk I/O to see data)           ║\n")
+		fmt.Printf("║ (no container I/O activity — run a container with disk I/O to see data)                    ║\n")
 	}
 	for _, s := range samples {
-		fmt.Printf("║ %-24s ║ %12.2f ║ %12.2f ║ %8.2f ║ %9.2f ║\n",
-			truncate(s.ContainerName, 24),
+		fmt.Printf("║ %-45s ║ %12.2f ║ %12.2f ║ %8.2f ║ %9.2f ║\n",
+			truncate(s.ContainerName, 45),
 			s.ReadBytesPerSec/1024,
 			s.WriteBytesPerSec/1024,
 			s.AvgReadLatencyMs,
 			s.AvgWriteLatencyMs,
 		)
 	}
-	fmt.Printf("╚══════════════════════════╩══════════════╩══════════════╩══════════╩════════════╝\n")
+	fmt.Printf("╚═══════════════════════════════════════════════╩══════════════╩══════════════╩══════════╩════════════╝\n")
 }
 
 func drainFileEvents(c *collector.IoCollector, log *slog.Logger, cfg displayConfig) {
@@ -1344,15 +1376,6 @@ func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayC
 		return
 	}
 
-	if prom != nil {
-		prom.UpdateNetwork(summaries)
-	}
-
-	// Sort by active flows descending
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].ActiveFlows > summaries[j].ActiveFlows
-	})
-
 	if cfg.containersOnly {
 		filtered := summaries[:0]
 		for _, s := range summaries {
@@ -1363,20 +1386,29 @@ func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayC
 		summaries = filtered
 	}
 
+	if prom != nil {
+		prom.UpdateNetwork(summaries)
+	}
+
+	// Sort by active flows descending
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ActiveFlows > summaries[j].ActiveFlows
+	})
+
 	summaries = applyTop(summaries, cfg.topN)
 
 	now := time.Now().Format("15:04:05")
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  M4: Network Observer  [%s]                                                      ║\n", now)
-	fmt.Printf("╠══════════════════════════╦═══════╦════════╦══════════╦═══════════╦══════════════╣\n")
-	fmt.Printf("║ Container                ║ Flows ║ ESTABL ║ TIM_WAIT ║ CLO_WAIT  ║ Retransmits  ║\n")
-	fmt.Printf("╠══════════════════════════╬═══════╬════════╬══════════╬═══════════╬══════════════╣\n")
+	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M4: Network Observer  [%s]                                                                           ║\n", now)
+	fmt.Printf("╠═══════════════════════════════════════════════╦═══════╦════════╦══════════╦═══════════╦══════════════╣\n")
+	fmt.Printf("║ Container                                     ║ Flows ║ ESTABL ║ TIM_WAIT ║ CLO_WAIT  ║ Retransmits  ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════╬═══════╬════════╬══════════╬═══════════╬══════════════╣\n")
 	if len(summaries) == 0 {
-		fmt.Printf("║ (no TCP activity — run a container that makes network connections)                   ║\n")
+		fmt.Printf("║ (no TCP activity — run a container that makes network connections)                                        ║\n")
 	}
 	for _, s := range summaries {
-		fmt.Printf("║ %-24s ║ %5d ║ %6d ║ %8d ║ %9d ║ %12d ║\n",
-			truncate(s.ContainerName, 24),
+		fmt.Printf("║ %-45s ║ %5d ║ %6d ║ %8d ║ %9d ║ %12d ║\n",
+			truncate(s.ContainerName, 45),
 			s.ActiveFlows,
 			s.Established,
 			s.TimeWait,
@@ -1384,7 +1416,7 @@ func printNetTable(c *collector.NetworkCollector, log *slog.Logger, cfg displayC
 			s.TotalRetransmits,
 		)
 	}
-	fmt.Printf("╚══════════════════════════╩═══════╩════════╩══════════╩═══════════╩══════════════╝\n")
+	fmt.Printf("╚═══════════════════════════════════════════════╩═══════╩════════╩══════════╩═══════════╩══════════════╝\n")
 }
 
 func drainTCPEvents(c *collector.NetworkCollector, log *slog.Logger, cfg displayConfig) {
@@ -1416,6 +1448,16 @@ func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg disp
 		return
 	}
 
+	if cfg.containersOnly {
+		filtered := all[:0]
+		for _, s := range all {
+			if isContainer(s.ContainerName) {
+				filtered = append(filtered, s)
+			}
+		}
+		all = filtered
+	}
+
 	if prom != nil {
 		prom.UpdateSyscalls(all)
 	}
@@ -1445,31 +1487,21 @@ func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg disp
 		return summaries[i].Rank < summaries[j].Rank
 	})
 
-	if cfg.containersOnly {
-		filtered := summaries[:0]
-		for _, s := range summaries {
-			if isContainer(s.ContainerName) {
-				filtered = append(filtered, s)
-			}
-		}
-		summaries = filtered
-	}
-
 	summaries = applyTop(summaries, cfg.topN)
 
 	now := time.Now().Format("15:04:05")
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  M6: Syscall Observer  [%s]                                                          ║\n", now)
-	fmt.Printf("╠══════════════════════════╦══════╦══════════════╦════════════╦═══════════╦═════════════════╣\n")
-	fmt.Printf("║ Container                ║ Rank ║ Syscall      ║ Count      ║ Failures  ║ Avg Latency (ms)║\n")
-	fmt.Printf("╠══════════════════════════╬══════╬══════════════╬════════════╬═══════════╬═════════════════╣\n")
+	fmt.Printf("\n╔═════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  M6: Syscall Observer  [%s]                                                                               ║\n", now)
+	fmt.Printf("╠═══════════════════════════════════════════════╦══════╦══════════════╦════════════╦═══════════╦═════════════════╣\n")
+	fmt.Printf("║ Container                                     ║ Rank ║ Syscall      ║ Count      ║ Failures  ║ Avg Latency (ms)║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════╬══════╬══════════════╬════════════╬═══════════╬═════════════════╣\n")
 	if len(summaries) == 0 {
-		fmt.Printf("║ (no Syscall activity)                                                                        ║\n")
+		fmt.Printf("║ (no Syscall activity)                                                                                       ║\n")
 	}
 	for _, s := range summaries {
 		rankStr := fmt.Sprintf("#%d", s.Rank)
-		fmt.Printf("║ %-24s ║ %-4s ║ %-12s ║ %10d ║ %9d ║ %15.3f ║\n",
-			truncate(s.ContainerName, 24),
+		fmt.Printf("║ %-45s ║ %-4s ║ %-12s ║ %10d ║ %9d ║ %15.3f ║\n",
+			truncate(s.ContainerName, 45),
 			rankStr,
 			truncate(s.SyscallName, 12),
 			s.Count,
@@ -1477,7 +1509,7 @@ func printSyscallTable(c *collector.SyscallCollector, log *slog.Logger, cfg disp
 			s.AvgLatencyMs,
 		)
 	}
-	fmt.Printf("╚══════════════════════════╩══════╩══════════════╩════════════╩═══════════╩═════════════════╝\n")
+	fmt.Printf("╚═══════════════════════════════════════════════╩══════╩══════════════╩════════════╩═══════════╩═════════════════╝\n")
 }
 
 func drainSlowSyscallEvents(c *collector.SyscallCollector, log *slog.Logger, cfg displayConfig) {

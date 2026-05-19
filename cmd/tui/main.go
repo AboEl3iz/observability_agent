@@ -48,6 +48,7 @@ func main() {
 	topN := flag.Int("top", 0, "limit each table to top N rows (0 = all)")
 	demo := flag.Bool("demo", false, "run with simulated data (no BPF required)")
 	themeName := flag.String("theme", "", "theme: github-dark|nord|gruvbox|tokyo-night|catppuccin|solarized")
+	richMem := flag.Bool("rich-mem", false, "enable VIRT/PSS/Shared collection via /proc/<pid>/smaps_rollup (adds I/O per poll)")
 	flag.Parse()
 
 	// ── Config: load from file, then apply CLI overrides ──────────────────────
@@ -128,6 +129,7 @@ func main() {
 		if err != nil {
 			logger.Warn("M2 Memory load failed — OOM and page faults disabled", "err", err)
 		} else {
+			memColl.RichMem = *richMem
 			allLinks = append(allLinks, links...)
 		}
 
