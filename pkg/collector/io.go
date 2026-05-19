@@ -141,6 +141,7 @@ func (c *IoCollector) Collect() ([]IoSample, error) {
 	var cgroupID uint64
 	var val IoStats
 
+	var toDelete []uint64
 	iter := c.ioMap.Iterate()
 	for iter.Next(&cgroupID, &val) {
 		name := fmt.Sprintf("cgroup:%d", cgroupID)
@@ -149,7 +150,7 @@ func (c *IoCollector) Collect() ([]IoSample, error) {
 			name = info.Name
 		} else {
 			// Dead container and history expired -> evict from BPF map to save kernel memory
-			_ = c.ioMap.Delete(&cgroupID)
+			toDelete = append(toDelete, cgroupID)
 			continue
 		}
 
@@ -189,6 +190,10 @@ func (c *IoCollector) Collect() ([]IoSample, error) {
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("iterating io_stats_map: %w", err)
+	}
+
+	for _, id := range toDelete {
+		_ = c.ioMap.Delete(&id)
 	}
 
 	// Update previous snapshot
