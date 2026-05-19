@@ -12,6 +12,7 @@
 package cgroup
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -89,15 +90,20 @@ type Resolver struct {
 	deletedAt   map[uint64]time.Time     // tracks when a cgroup ID was moved to history
 	lastRefresh time.Time
 	k8sCache    map[string]K8sInfo
+
+	// k8sMode accelerates refresh rate and enables kubelet enrichment logging.
+	k8sMode       bool
+	refreshPeriodD time.Duration // dynamic refresh period (set by SetK8sMode)
 }
 
 // NewResolver creates a Resolver and performs the initial scan.
 func NewResolver() (*Resolver, error) {
 	r := &Resolver{
-		cache:     make(map[uint64]ContainerInfo),
-		history:   make(map[uint64]ContainerInfo),
-		deletedAt: make(map[uint64]time.Time),
-		k8sCache:  make(map[string]K8sInfo),
+		cache:          make(map[uint64]ContainerInfo),
+		history:        make(map[uint64]ContainerInfo),
+		deletedAt:      make(map[uint64]time.Time),
+		k8sCache:       make(map[string]K8sInfo),
+		refreshPeriodD: refreshPeriod,
 	}
 	if err := r.refresh(); err != nil {
 		return nil, fmt.Errorf("initial cgroup scan failed: %w", err)
@@ -106,6 +112,21 @@ func NewResolver() (*Resolver, error) {
 	go r.backgroundEviction()
 	return r, nil
 }
+
+// SetK8sMode enables Kubernetes-optimised behaviour:
+//   - Refresh rate drops from 10s → 2s to handle fast pod churn
+//   - Kubelet enrichment failures are logged as warnings (instead of silently ignored)
+func (r *Resolver) SetK8sMode(enabled bool) {
+	r.mu.Lock()
+	r.k8sMode = enabled
+	if enabled {
+		r.refreshPeriodD = 2 * time.Second
+	} else {
+		r.refreshPeriodD = refreshPeriod
+	}
+	r.mu.Unlock()
+}
+
 
 // Lookup returns the ContainerInfo for a given cgroup_id.
 // Returns a not-found result if the resolver is empty or the id is unknown.
@@ -272,9 +293,14 @@ func (r *Resolver) refresh() error {
 }
 
 func (r *Resolver) backgroundRefresh() {
+	// Use a short initial period; re-evaluate after each tick based on k8sMode.
 	ticker := time.NewTicker(refreshPeriod)
 	defer ticker.Stop()
 	for range ticker.C {
+		r.mu.RLock()
+		period := r.refreshPeriodD
+		r.mu.RUnlock()
+		ticker.Reset(period)
 		_ = r.refresh()
 	}
 }
@@ -444,10 +470,66 @@ func fetchDockerName(id string) string {
 	return strings.TrimPrefix(result.Name, "/")
 }
 
+func getKubeletClient() (*http.Client, string) {
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Timeout: 500 * time.Millisecond, Transport: tr}
+
+	// 1. Try ServiceAccount Token (in-cluster pod deployment)
+	tokenFile := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	if token, err := os.ReadFile(tokenFile); err == nil {
+		return client, "Bearer " + strings.TrimSpace(string(token))
+	}
+
+	// 2. Try Host-level Kubelet Client PEM (Systemd native on EKS / Kubeadm nodes)
+	pemPath := "/var/lib/kubelet/pki/kubelet-client-current.pem"
+	if _, err := os.Stat(pemPath); err == nil {
+		if cert, err := tls.LoadX509KeyPair(pemPath, pemPath); err == nil {
+			tr.TLSClientConfig.Certificates = []tls.Certificate{cert}
+			return client, ""
+		}
+	}
+
+	// 3. Try parsing host-level kubelet kubeconfig for token (bootstrapped nodes)
+	kubeconfigPaths := []string{
+		"/var/lib/kubelet/kubeconfig",
+		"/etc/kubernetes/kubelet/kubeconfig",
+	}
+	for _, kPath := range kubeconfigPaths {
+		if data, err := os.ReadFile(kPath); err == nil {
+			scanner := bufio.NewScanner(strings.NewReader(string(data)))
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if strings.HasPrefix(line, "token:") {
+					token := strings.TrimSpace(strings.TrimPrefix(line, "token:"))
+					token = strings.Trim(token, `"'`)
+					if token != "" {
+						return client, "Bearer " + token
+					}
+				}
+			}
+		}
+	}
+
+	return client, ""
+}
+
 func fetchKubeletPods() (*kubeletPodList, error) {
-	// Try HTTP first
+	// 1. Try local containerd task configs (OCI specs) first — fast, secure, offline
+	if list, err := fetchKubeletPodsFromTaskConfig(); err == nil && len(list.Items) > 0 {
+		return list, nil
+	}
+
+	// Fallback to Kubelet API
+	nodeIP := os.Getenv("NODE_IP")
+	if nodeIP == "" {
+		nodeIP = "127.0.0.1"
+	}
+
+	// Try HTTP first (read-only port)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get("http://127.0.0.1:10255/pods")
+	resp, err := client.Get(fmt.Sprintf("http://%s:10255/pods", nodeIP))
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
@@ -458,19 +540,16 @@ func fetchKubeletPods() (*kubeletPodList, error) {
 		}
 	}
 
-	// Try HTTPS with token
-	token, _ := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	clientSec := &http.Client{Timeout: 500 * time.Millisecond, Transport: tr}
-	req, err := http.NewRequest("GET", "https://127.0.0.1:10250/pods", nil)
+	// Try HTTPS with dynamically resolved authentication client (token / client certs)
+	clientSec, authHeader := getKubeletClient()
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s:10250/pods", nodeIP), nil)
 	if err != nil {
 		return nil, err
 	}
-	if len(token) > 0 {
-		req.Header.Set("Authorization", "Bearer "+string(token))
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
 	}
+
 	respSec, err := clientSec.Do(req)
 	if err == nil {
 		defer respSec.Body.Close()
@@ -482,7 +561,133 @@ func fetchKubeletPods() (*kubeletPodList, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("could not reach kubelet /pods API")
+	return nil, fmt.Errorf("could not reach kubelet /pods API at %s", nodeIP)
+}
+
+func fetchKubeletPodsFromTaskConfig() (*kubeletPodList, error) {
+	taskPath := "/run/containerd/io.containerd.runtime.v2.task/k8s.io"
+	entries, err := os.ReadDir(taskPath)
+	if err != nil {
+		return nil, err
+	}
+
+	type podGroup struct {
+		Name       string
+		Namespace  string
+		UID        string
+		Containers []struct {
+			Name string
+			ID   string
+		}
+	}
+	podMap := make(map[string]*podGroup)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		cID := entry.Name()
+		configPath := filepath.Join(taskPath, cID, "config.json")
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			continue
+		}
+
+		var spec struct {
+			Annotations map[string]string `json:"annotations"`
+		}
+		if err := json.Unmarshal(data, &spec); err != nil {
+			continue
+		}
+
+		if spec.Annotations == nil {
+			continue
+		}
+
+		podName := spec.Annotations["io.kubernetes.cri.sandbox-name"]
+		podNS := spec.Annotations["io.kubernetes.cri.sandbox-namespace"]
+		podUID := spec.Annotations["io.kubernetes.cri.sandbox-uid"]
+		containerName := spec.Annotations["io.kubernetes.cri.container-name"]
+
+		if podName == "" {
+			podName = spec.Annotations["io.kubernetes.pod.name"]
+		}
+		if podNS == "" {
+			podNS = spec.Annotations["io.kubernetes.pod.namespace"]
+		}
+		if podUID == "" {
+			podUID = spec.Annotations["io.kubernetes.pod.uid"]
+		}
+		containerType := spec.Annotations["io.kubernetes.cri.container-type"]
+		if containerName == "" {
+			if containerType == "sandbox" {
+				containerName = "sandbox"
+			} else {
+				containerName = spec.Annotations["io.kubernetes.container.name"]
+			}
+		}
+
+		if podName != "" && podNS != "" {
+			podKey := podNS + "/" + podName
+			p, exists := podMap[podKey]
+			if !exists {
+				p = &podGroup{
+					Name:      podName,
+					Namespace: podNS,
+					UID:       podUID,
+				}
+				podMap[podKey] = p
+			}
+			p.Containers = append(p.Containers, struct {
+				Name string
+				ID   string
+			}{
+				Name: containerName,
+				ID:   "containerd://" + cID,
+			})
+		}
+	}
+
+	var list kubeletPodList
+	for _, p := range podMap {
+		var item struct {
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+				UID       string `json:"uid"`
+			} `json:"metadata"`
+			Status struct {
+				ContainerStatuses []struct {
+					Name        string `json:"name"`
+					ContainerID string `json:"containerID"`
+				} `json:"containerStatuses"`
+				InitContainerStatuses []struct {
+					Name        string `json:"name"`
+					ContainerID string `json:"containerID"`
+				} `json:"initContainerStatuses"`
+				EphemeralContainerStatuses []struct {
+					Name        string `json:"name"`
+					ContainerID string `json:"containerID"`
+				} `json:"ephemeralContainerStatuses"`
+			} `json:"status"`
+		}
+		item.Metadata.Name = p.Name
+		item.Metadata.Namespace = p.Namespace
+		item.Metadata.UID = p.UID
+
+		for _, c := range p.Containers {
+			item.Status.ContainerStatuses = append(item.Status.ContainerStatuses, struct {
+				Name        string `json:"name"`
+				ContainerID string `json:"containerID"`
+			}{
+				Name:        c.Name,
+				ContainerID: c.ID,
+			})
+		}
+		list.Items = append(list.Items, item)
+	}
+
+	return &list, nil
 }
 
 func extractContainerID(rel string) string {
