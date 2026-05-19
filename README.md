@@ -30,11 +30,12 @@ It resolves kernel-level PIDs and cgroup IDs to human-readable container names (
 
 | Module | BPF Program | Hook Points | What it tracks |
 |--------|-------------|-------------|----------------|
-| **M1 CPU** | `cpu.c` | `sched_switch`, `sched_process_wait` | CPU time (s/Δt), runqueue latency, context switches/s, live thread count |
-| **M2 Memory** | `memory.c` | `exceptions/page_fault_user`, `oom/mark_victim` | RSS (MB), memory limit, page faults/s, real-time OOM-kill events |
+| **M1 CPU** | `cpu.c` | `sched_switch`, `sched_process_wait` | CPU time (s/Δt), runqueue latency, context switches/s, live thread count, **NUMA balancing (local % vs remote %)** |
+| **M2 Memory** | `memory.c` | `exceptions/page_fault_user`, `oom/mark_victim` | VIRT, RSS, PSS, Shared (MB), **Major/Minor page faults/s**, **PSI Pressure (some % \| full %)**, **TLB miss rate proxy**, real-time OOM-kill events |
 | **M3 Disk I/O** | `io.c` | `block_rq_insert`, `block_rq_complete`, `sys_enter_openat` | Read/Write KB/s, R/W latency (ms), real-time file-open stream |
 | **M4 Network** | `network.c` | `inet_sock_set_state`, `tcp_retransmit_skb`, `tcp_sendmsg` | Active flows, ESTABLISHED/TIME_WAIT/CLOSE_WAIT, retransmits, real-time TCP transitions |
 | **M6 Syscall** | `syscall.c` | `raw_syscalls:sys_enter/exit` | Top 5 syscalls per container, failure counts, avg latency, slow syscall alerts (>50 ms) |
+
 
 ###  Security Telemetry — Phase 1–5
 
@@ -58,13 +59,14 @@ It resolves kernel-level PIDs and cgroup IDs to human-readable container names (
 | Key | Tab | Contents |
 |-----|-----|----------|
 | `1` | **Overview** | Container summary table — all metrics in one glance |
-| `2` | **CPU** | Per-container CPU seconds, runqueue latency, context switches, threads |
-| `3` | **Memory** | RSS, limit, page faults/s, OOM kill events |
+| `2` | **CPU** | CPU time, runqueue latency, context switches, thread count, **NUMA Balancing (local % / remote %)** |
+| `3` | **Memory** | **VIRT, RSS, PSS, Shared (MB)**, **major/minor page faults/s**, **PSI Pressure**, **TLB Miss Rate**, OOM kill events |
 | `4` | **I/O** | Block read/write KB/s, latency, file-open event stream |
 | `5` | **Network** | TCP flows, connection state distribution, retransmit heatmap |
 | `6` | **Syscall** | Top-5 syscalls ranked by frequency with failure rates and latency |
 | `7` | **Events** | Live, colour-coded security event stream with `[DNS]` `[EXEC]` `[PRIV]` `[ESCP]` badges |
 | `8` | **Graphs** | System-wide sparkline graphs per container (CPU, Mem, I/O R/W, Net flows) |
+
 
 ### Container Detail Cockpit (`Enter` from any table row)
 
@@ -213,7 +215,7 @@ make run-files
 
 ---
 
-## Docker / Production Deployment
+## Docker / Containerized Production Deployment
 
 ```bash
 # Build image and start in background
@@ -223,12 +225,170 @@ docker-compose up -d
 ```
 
 The container:
+- Runs in the **host PID namespace** for cgroup resolution.
+- Uses **capability-scoped** permissions (no `--privileged` required): `BPF` · `PERFMON` · `SYS_ADMIN` · `SYS_RESOURCE` · `DAC_READ_SEARCH` · `NET_ADMIN`.
+- Exposes `HTTP :8080` for health checks — `GET /healthz` and Prometheus scraping — `GET /metrics`.
+- Mounts `/sys/fs/cgroup`, `/proc`, `/sys/fs/bpf` from the host.
 
-- Runs in the **host PID namespace** for cgroup resolution
-- Uses **capability-scoped** permissions (no `--privileged`):  
-  `BPF` · `PERFMON` · `SYS_ADMIN` · `SYS_RESOURCE` · `DAC_READ_SEARCH` · `NET_ADMIN`
-- Exposes `HTTP :8080` for health checks — `GET /healthz`
-- Mounts `/sys/fs/cgroup`, `/proc`, `/sys/fs/bpf` from the host
+---
+
+## Native Host Systemd Deployment (Recommended)
+
+For VM-based production environments, running the agent as a native `systemd` service is recommended. It eliminates containerization overhead and capability mapping complexities.
+
+We provide a systemd service unit with **production-grade sandboxing** (using `CapabilityBoundingSet` and `ProtectSystem=strict` to restrict the process's access).
+
+### 1. Installation
+Build BPF programs, compile the Go binary, install to path, and register the service:
+```bash
+sudo make install
+```
+
+This installs:
+* Binary: `/usr/local/bin/ebpf-observer`
+* eBPF Objects: `/usr/local/share/ebpf-observer/*.o`
+* Systemd Service: `/etc/systemd/system/ebpf-observer.service`
+* Config Options: `/etc/default/ebpf-observer`
+
+### 2. Service Management
+```bash
+# Start the service
+sudo systemctl start ebpf-observer
+
+# View live service logs
+make systemd-logs
+# or: journalctl -u ebpf-observer -f
+
+# Check service status
+make systemd-status
+# or: systemctl status ebpf-observer
+
+# Stop the service
+sudo systemctl stop ebpf-observer
+```
+
+### 3. Configuration
+Options can be configured by editing `/etc/default/ebpf-observer`:
+```bash
+# Example /etc/default/ebpf-observer
+EBPF_OBSERVER_OPTS="--containers-only --show-security --rich-mem"
+```
+
+### 4. Uninstallation
+To completely stop, disable, and clean up the service:
+```bash
+sudo make uninstall
+```
+
+---
+
+## Prometheus & Grafana Monitoring Stack
+
+We provide a complete out-of-the-box monitoring stack containing the eBPF Observer agent, Prometheus, and Grafana.
+
+### 1. Start the Local Compose Stack
+```bash
+# Build the agent and start all containers sharing the host network
+make monitoring-up
+```
+Once started, the services are available at:
+* **eBPF Observer metrics**: `http://localhost:8080/metrics`
+* **Prometheus**: `http://localhost:9090` (configured to scrape eBPF Observer)
+* **Grafana**: `http://localhost:3000` (default login: `admin` / `admin`)
+
+### 2. Stop the Local Compose Stack
+```bash
+make monitoring-down
+```
+
+### 3. Grafana Dashboard
+We include a python script (`monitoring/gen_dashboard.py`) to auto-generate a comprehensive 46-panel dashboard JSON located at `monitoring/grafana/provisioning/dashboards/ebpf_observer.json`.
+
+The dashboard is auto-provisioned inside Grafana and split into:
+* **Overview**: Container summary, CPU/Memory gauges, and OOM kills.
+* **CPU**: CPU usage, runqueue latency, thread count, and NUMA balancing metrics.
+* **Memory**: VIRT/RSS/PSS/Shared usage, split major/minor page faults, PSI pressure, and TLB miss rate.
+* **Disk I/O**: Block read/write rates and file open requests.
+* **Network**: Active TCP flows and state distribution.
+* **Syscalls**: Top system calls and slow syscall rates.
+* **Security Events**: Exec count, privilege escalation rate, escape indicators, and DNS query counts.
+
+### 4. Production Kubernetes & Helm Deployment
+
+For distributed Kubernetes environments, the agent is deployed as a cluster-wide DaemonSet in `kube-system`, alongside a pre-configured Prometheus Operator stack in the `monitoring` namespace.
+
+All manifests are located in `deploy/k8s/`:
+* **DaemonSet & Service (`daemonset.yaml`, `service.yaml`)**: Runs the containerized agent with targeted permissions, host networking, host namespaces, and binds to the correct Node IP.
+* **Helm Values Override (`prometheus-values.yaml`)**: Overrides `kube-prometheus-stack` to enable cross-namespace `ServiceMonitor` discovery and configures the Grafana sidecar to automatically provision dashboards from ConfigMaps in any namespace.
+* **Dashboard ConfigMap (`grafana-dashboard-configmap.yaml`)**: Wraps the 46-panel dashboard JSON in a ConfigMap labeled `grafana_dashboard: "1"` for dynamic hot-loading into Grafana.
+* **ServiceMonitor (`servicemonitor.yaml`)**: Targets our agent service in `kube-system` namespace. Uses `honorLabels: true` to prevent Prometheus from stripping the container/pod/namespace labels populated by the eBPF resolver.
+* **Ingress (`grafana-ingress.yaml`)**: Configures production access to the Grafana dashboard via an Nginx Ingress Controller.
+
+#### Step-by-Step K8s Deployment
+```bash
+# 1. Install Prometheus & Grafana stack using custom Helm values
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f deploy/k8s/prometheus-values.yaml
+
+# 2. Deploy Dashboard ConfigMap
+kubectl apply -f deploy/k8s/grafana-dashboard-configmap.yaml -n monitoring
+
+# 3. Deploy Agent DaemonSet, Service, RBAC, and ServiceAccount
+kubectl apply -f deploy/k8s/serviceaccount.yaml
+kubectl apply -f deploy/k8s/rbac.yaml
+kubectl apply -f deploy/k8s/service.yaml
+kubectl apply -f deploy/k8s/daemonset.yaml
+
+# 4. Deploy ServiceMonitor (scrapes metrics in kube-system from monitoring)
+kubectl apply -f deploy/k8s/servicemonitor.yaml -n monitoring
+
+# 5. Optional: Deploy Ingress rules for external Grafana UI access
+kubectl apply -f deploy/k8s/grafana-ingress.yaml
+```
+
+#### Accessing the Dashboards
+* **Local Port-Forwarding**: `kubectl port-forward svc/prometheus-grafana -n monitoring 3000:80` -> Open `http://localhost:3000` (User: `admin` / Password: dynamic secret. To reset to `admin123` run `kubectl exec -it -n monitoring deploy/prometheus-grafana -c grafana -- grafana-cli admin reset-admin-password admin123`).
+* **Minikube Shortcut**: `minikube service prometheus-grafana -n monitoring`
+* **Multi-Node Filtering**: The dashboard includes cascading dropdown filters for **Node**, **Namespace**, and **Container** to seamlessly filter telemetry across multi-node topologies.
+
+### 5. AWS EKS Systemd Native Deployment
+
+For VM-based production environments (e.g. AWS EKS worker nodes), we deploy the eBPF Observer agent as a native `systemd` service directly on the host. This guarantees high-performance access to the host kernel namespaces and avoids container capabilities overhead.
+
+We provision the infrastructure using Terraform (`deploy/terraform/`) and manage deployments via `Makefile` targets.
+
+#### Key Features of our EKS Integration:
+1. **Local Containerd Metadata Resolver**: Because EKS restricts access to the Kubelet API on port `10250` (returning `403 Forbidden` for standard node IAM roles), the agent bypasses Kubelet completely and walks the local containerd runtime task directory `/run/containerd/io.containerd.runtime.v2.task/k8s.io/` to parse `config.json` files. This extracts Kubernetes container/pod annotations with 100% offline, zero-network, high-speed resolution.
+2. **Host-Network Port-Forwarding Tunnel**: Since VMs aren't directly reachable from local scrapers and standard nodes cannot be targeted by `kubectl port-forward`, the `make eks-port-forward` target discovers the `aws-node` VPC CNI pods running on the host network (`hostNetwork: true`). Forwarding to these pods on port `8080` routes traffic directly to the node's loopback network namespace where our agent metrics exporter is listening.
+3. **Optimized VM Sizing**: Worker nodes are configured with `t3.small` instances and `20 GB` volumes to comply with EKS AL2023 AMI constraints while staying cost-effective.
+
+#### EKS Management Workflow
+```bash
+# 1. Initialize and apply Terraform config to spin up EKS & Worker Nodes
+cd deploy/terraform
+terraform init
+terraform plan -out=tfplan
+terraform apply tfplan
+
+# 2. Configure local kubectl context for the new cluster
+cd ../..
+make eks-kubeconfig
+
+# 3. Compile and upload agent binaries + install script to S3
+make eks-push S3_BUCKET=<bucket-name> AWS_REGION=<region>
+
+# 4. Trigger SSM run-command to install & start the systemd service on nodes
+make eks-refresh S3_BUCKET=<bucket-name> AWS_REGION=<region>
+
+# 5. Check installation status and systemd logs on EKS nodes
+make eks-status
+
+# 6. Start the local port-forwarding metrics scraping tunnel
+make eks-port-forward
+```
 
 ---
 
@@ -342,6 +502,63 @@ We implemented a **Stale Entries Eviction system** that manages deletion at both
    * **Syscalls**: deletes key from `statsMap`.
 
 This instantly stops the metric leak, reduces userspace iteration overhead, and cleans up kernel memory!
+
+### Case Study: Prometheus Target Scrape Label Conflicts (Stale `ebpf-observer` Container Label)
+
+#### Symptom
+After deploying the observability agent into a Kubernetes cluster, all container metrics on the Grafana dashboard displayed with the container name `ebpf-observer` (the name of our agent pod) rather than the actual namespace/pod/container names of the workloads.
+
+#### Root Cause
+By default, when Prometheus scrapes a target (our agent's `/metrics` endpoint), it overrides metric-level metadata labels like `container`, `pod`, and `namespace` with the target's own labels (the agent's metadata). To prevent data loss, it renames the metric's original values to `exported_container`, `exported_pod`, etc.
+
+#### Engineering Solution
+We applied two configurations to resolve this:
+1. Enabled **`honorLabels: true`** in our `ServiceMonitor` ([deploy/k8s/servicemonitor.yaml](file:///media/karim/New%20Volume2/go/ebpf/deploy/k8s/servicemonitor.yaml)). This instructs Prometheus to trust the labels resolved by our eBPF agent and prevent overriding them.
+2. Filtered out Kubernetes infrastructure **Pause containers** (`registry.k8s.io/pause`), which manage network namespaces but do not run user code and aren't listed in the Kubelet `/pods` API. These fall back to standard `docker:<short-id>` labels to preserve transparency.
+
+### Case Study: eBPF Map Iterator Collapse (Syscall Metrics Black Hole)
+
+#### Symptom
+Syscall and CPU metrics sporadically vanished from the Grafana dashboard, and the agent's container logs repeatedly reported `iteration aborted` errors:
+```text
+level=ERROR msg="Syscall collect error" err="iteration aborted"
+level=ERROR msg="CPU collect error" err="iterating cpu_stats_map: iteration aborted"
+```
+
+#### Root Cause (Iterator Offset Corruption)
+Inside the `Collect()` loop of all BPF collectors, we iterated over BPF maps using the `Map.Iterate().Next()` API. If a container was determined to be dead/exited, the code immediately invoked `Map.Delete(&key)` from within the loop. In the Linux kernel, modifying a hash map (deleting keys) while active iteration is in progress corrupts the iterator's internal bucket offset, causing it to fail immediately and abort metric retrieval.
+
+#### Engineering Solution
+We restructured the map traversal pattern across all 5 collectors (CPU, Memory, I/O, Network, and Syscalls) to use a **Deferred Eviction Pattern**:
+1. Iterate over the BPF map to read metrics and identify stale keys, adding them to a slice (e.g. `toDelete := []Key{}`).
+2. Exit the map iteration loop cleanly.
+3. Perform the map deletions sequentially in a separate loop:
+   ```go
+   for _, key := range toDelete {
+       _ = c.statsMap.Delete(&key)
+   }
+   ```
+This guarantees that BPF map iteration is never interrupted, ensuring stable metric streams and preventing collection black holes.
+
+### Case Study: EKS Kubelet API 403 Forbidden & Local Containerd Resolver Transition
+
+#### Symptom
+After deploying the observability agent to EKS worker nodes, all container names in Grafana, Prometheus metrics, and the exporter output displayed as cgroup ID hashes (e.g. `k8s:be00f518575c` or `k8s:d28ba543ebcb`) instead of human-readable `namespace/pod/container` names.
+
+#### Root Cause
+1. **Strict Kubelet API Port 10250 Authentication**: EKS disables anonymous authentication to the Kubelet on port `10250` and disables the read-only port `10255` entirely.
+2. **IAM Authorization Denials (HTTP 403 Forbidden)**: Although the agent ran as `root`, it did not have a service account token mounted. When it generated an EKS token using the node's IAM role (`system:node:ip-...`), the Kubernetes API server rejected the Kubelet proxy request with `403 Forbidden`. The node role is restricted to self-registration and cannot read pod configurations from Kubelet.
+3. **Sandbox Container Skips**: The initial implementation skipped container configs flagged as `sandbox` (pause containers), leaving their metrics unresolved.
+
+#### Engineering Solution
+We implemented a **Local Containerd OCI Runtime Config Resolver** as the primary resolution path:
+1. **Task Directory Walk**: Since the agent runs as `root` on the host, it scans the local containerd task directory: `/run/containerd/io.containerd.runtime.v2.task/k8s.io/`.
+2. **OCI Spec Parsing**: It reads each active container's `config.json` and extracts the Kubernetes-populated annotations directly from the OCI spec:
+   * `io.kubernetes.cri.sandbox-name` (Pod Name)
+   * `io.kubernetes.cri.sandbox-namespace` (Namespace)
+   * `io.kubernetes.cri.container-name` (Container Name)
+3. **Sandbox Handling**: If a task is a sandbox (pause container), it is named `sandbox` (resolving to `namespace/pod/sandbox`) instead of being skipped.
+This provides 100% offline, zero-dependency, and extremely fast metadata resolution that is completely decoupled from API server access.
 
 ---
 
