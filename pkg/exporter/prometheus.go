@@ -18,9 +18,17 @@ type PrometheusExporter struct {
 	Threads           *prometheus.GaugeVec
 
 	// M2 Memory
-	MemoryRSS        *prometheus.GaugeVec
-	MemoryLimit      *prometheus.GaugeVec
-	PageFaultsPerSec *prometheus.GaugeVec
+	MemoryRSS           *prometheus.GaugeVec
+	MemoryLimit         *prometheus.GaugeVec
+	MemoryVirt          *prometheus.GaugeVec
+	MemoryPSS           *prometheus.GaugeVec
+	MemoryShared        *prometheus.GaugeVec
+	PageFaultsMinorPerSec *prometheus.GaugeVec
+	PageFaultsMajorPerSec *prometheus.GaugeVec
+	PageFaultsPerSec    *prometheus.GaugeVec // total (minor+major) for backwards compat
+	PSISomePct          *prometheus.GaugeVec
+	PSIFullPct          *prometheus.GaugeVec
+	TLBMissRate         *prometheus.GaugeVec
 
 	// M3 I/O
 	DiskReadBytesPerSec  *prometheus.GaugeVec
@@ -39,6 +47,10 @@ type PrometheusExporter struct {
 	SyscallCount    *prometheus.GaugeVec
 	SyscallFailures *prometheus.GaugeVec
 	SyscallLatency  *prometheus.GaugeVec
+
+	// M1 CPU — NUMA balance
+	NUMALocalPct  *prometheus.GaugeVec
+	NUMARemotePct *prometheus.GaugeVec
 
 	// Security Events
 	SecurityEvents *prometheus.CounterVec
@@ -77,15 +89,47 @@ func NewPrometheusExporter(reg prometheus.Registerer) *PrometheusExporter {
 
 		MemoryRSS: factory.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ebpf_memory_rss_bytes",
-			Help: "Memory RSS in bytes",
+			Help: "Memory RSS in bytes (cgroupfs memory.current)",
 		}, labels),
 		MemoryLimit: factory.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ebpf_memory_limit_bytes",
 			Help: "Memory limit in bytes",
 		}, labels),
+		MemoryVirt: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_memory_virt_bytes",
+			Help: "Virtual memory size in bytes (sum of VmSize from /proc/<pid>/status; requires --rich-mem)",
+		}, labels),
+		MemoryPSS: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_memory_pss_bytes",
+			Help: "Proportional set size in bytes (smaps_rollup; requires --rich-mem)",
+		}, labels),
+		MemoryShared: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_memory_shared_bytes",
+			Help: "Shared memory in bytes (Shared_Clean+Shared_Dirty from smaps_rollup; requires --rich-mem)",
+		}, labels),
 		PageFaultsPerSec: factory.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ebpf_page_faults_per_sec",
-			Help: "Page faults per second",
+			Help: "Total page faults per second (minor + major)",
+		}, labels),
+		PageFaultsMinorPerSec: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_page_faults_minor_per_sec",
+			Help: "Minor page faults per second (no disk I/O; TLB miss proxy)",
+		}, labels),
+		PageFaultsMajorPerSec: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_page_faults_major_per_sec",
+			Help: "Major page faults per second (demand-paging, disk I/O required)",
+		}, labels),
+		PSISomePct: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_memory_psi_some_pct",
+			Help: "Memory PSI pressure some% avg10 (at least one task stalled)",
+		}, labels),
+		PSIFullPct: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_memory_psi_full_pct",
+			Help: "Memory PSI pressure full% avg10 (all tasks stalled)",
+		}, labels),
+		TLBMissRate: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_tlb_miss_rate",
+			Help: "TLB miss rate approximation (minor faults/s)",
 		}, labels),
 
 		DiskReadBytesPerSec: factory.NewGaugeVec(prometheus.GaugeOpts{
@@ -144,6 +188,16 @@ func NewPrometheusExporter(reg prometheus.Registerer) *PrometheusExporter {
 			Help: "Total security events detected",
 		}, append(labels, "type")),
 
+		// NUMA balance (M1 CPU)
+		NUMALocalPct: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_numa_local_pct",
+			Help: "% of scheduling intervals that were NUMA-local (cpu.stat nr_migrations proxy)",
+		}, labels),
+		NUMARemotePct: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ebpf_numa_remote_pct",
+			Help: "% of scheduling intervals that required cross-NUMA migration",
+		}, labels),
+
 		OomKills: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "ebpf_oom_kills_total",
 			Help: "Total OOM kills detected per container",
@@ -191,6 +245,8 @@ func (e *PrometheusExporter) UpdateCPU(samples []collector.CpuSample) {
 		e.RunqLatency.WithLabelValues(ns, pod, container).Set(s.RunqLatencySeconds)
 		e.CtxSwitchesPerSec.WithLabelValues(ns, pod, container).Set(s.CtxSwitchesPerSec)
 		e.Threads.WithLabelValues(ns, pod, container).Set(float64(s.ThreadCount))
+		e.NUMALocalPct.WithLabelValues(ns, pod, container).Set(s.NUMALocalPct)
+		e.NUMARemotePct.WithLabelValues(ns, pod, container).Set(s.NUMARemotePct)
 	}
 }
 
@@ -201,6 +257,21 @@ func (e *PrometheusExporter) UpdateMemory(samples []collector.MemSample) {
 		e.MemoryRSS.WithLabelValues(ns, pod, container).Set(float64(s.MemoryBytes))
 		e.MemoryLimit.WithLabelValues(ns, pod, container).Set(float64(s.MemoryLimitBytes))
 		e.PageFaultsPerSec.WithLabelValues(ns, pod, container).Set(s.FaultsPerSec)
+		e.PageFaultsMinorPerSec.WithLabelValues(ns, pod, container).Set(s.MinorPerSec)
+		e.PageFaultsMajorPerSec.WithLabelValues(ns, pod, container).Set(s.MajorPerSec)
+		e.PSISomePct.WithLabelValues(ns, pod, container).Set(s.PSISome)
+		e.PSIFullPct.WithLabelValues(ns, pod, container).Set(s.PSIFull)
+		e.TLBMissRate.WithLabelValues(ns, pod, container).Set(s.TLBMissRate)
+		// Rich-mem metrics (0 when --rich-mem not set)
+		if s.VirtBytes > 0 {
+			e.MemoryVirt.WithLabelValues(ns, pod, container).Set(float64(s.VirtBytes))
+		}
+		if s.PSSBytes > 0 {
+			e.MemoryPSS.WithLabelValues(ns, pod, container).Set(float64(s.PSSBytes))
+		}
+		if s.SharedBytes > 0 {
+			e.MemoryShared.WithLabelValues(ns, pod, container).Set(float64(s.SharedBytes))
+		}
 	}
 }
 
@@ -245,11 +316,30 @@ func (e *PrometheusExporter) UpdateOOM(containerName string) {
 
 // PrometheusSecurityEventWriter wraps an existing writer and also updates metrics.
 type PrometheusSecurityEventWriter struct {
-	Inner    event.SecurityEventWriter
-	Exporter *PrometheusExporter
+	Inner          event.SecurityEventWriter
+	Exporter       *PrometheusExporter
+	ContainersOnly bool
+}
+
+func isContainer(name string) bool {
+	if strings.HasPrefix(name, "docker:") || strings.HasPrefix(name, "cri:") || strings.HasPrefix(name, "k8s:") {
+		return true
+	}
+	// Kubernetes pod container names are formatted as "namespace/pod/container"
+	if strings.Count(name, "/") == 2 {
+		return true
+	}
+	return false
 }
 
 func (w *PrometheusSecurityEventWriter) Write(ev event.EventEnvelope) {
+	if w.ContainersOnly && !isContainer(ev.ContainerName) {
+		if w.Inner != nil {
+			w.Inner.Write(ev)
+		}
+		return
+	}
+
 	ns, pod, container := splitK8sLabels(ev.ContainerName)
 	w.Exporter.SecurityEvents.WithLabelValues(ns, pod, container, string(ev.EventType)).Inc()
 

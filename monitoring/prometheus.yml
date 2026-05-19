@@ -1,0 +1,60 @@
+# Prometheus configuration for eBPF Observability Agent
+# Used by the monitoring docker-compose stack
+#
+# NOTE: All services run with network_mode: host, so they all share the
+# host's loopback. Container hostnames (ebpf-observer) are NOT resolvable
+# via Docker's internal DNS in this mode. Use localhost / 127.0.0.1 instead.
+#
+# EKS scraping: run `make eks-port-forward` in a separate terminal first.
+# That command forwards EKS node :8080 → localhost:8081 and localhost:8082.
+
+global:
+  scrape_interval:     5s
+  evaluation_interval: 5s
+  external_labels:
+    monitor: 'ebpf-observer'
+
+rule_files: []
+
+scrape_configs:
+  # ── Local eBPF Observability Agent (docker-compose / dev machine) ─────
+  # All containers share the host network → use localhost, not the service name
+  - job_name: 'ebpf-observer-local'
+    static_configs:
+      - targets: ['localhost:8080']
+        labels:
+          instance: 'local'
+          env: 'local'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    scrape_timeout: 4s
+
+  # ── EKS Node 1 (via kubectl port-forward node/<name> 8081:8080) ───────
+  # Requires: make eks-port-forward  (keep that terminal open)
+  - job_name: 'ebpf-observer-eks-node1'
+    static_configs:
+      - targets: ['localhost:8081']
+        labels:
+          env: 'eks'
+          node: 'eks-node-1'
+          cluster: 'ebpf-observer-test'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    scrape_timeout: 4s
+
+  # ── EKS Node 2 (via kubectl port-forward node/<name> 8082:8080) ───────
+  - job_name: 'ebpf-observer-eks-node2'
+    static_configs:
+      - targets: ['localhost:8082']
+        labels:
+          env: 'eks'
+          node: 'eks-node-2'
+          cluster: 'ebpf-observer-test'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    scrape_timeout: 4s
+
+  # ── Prometheus self-monitoring ────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
