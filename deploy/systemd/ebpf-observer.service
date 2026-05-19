@@ -1,0 +1,43 @@
+[Unit]
+Description=eBPF Observability Agent
+After=network.target
+Documentation=https://github.com/AboEl3iz/observability_agent
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/ebpf-observer
+ExecStart=/usr/local/bin/ebpf-observer $EBPF_OBSERVER_OPTS
+Restart=always
+RestartSec=5s
+
+# ─── Production-Grade Security Sandboxing ───
+# Run with root privileges to interact with BPF and cgroups,
+# but restrict system-wide capability exposure and sandbox filesystem.
+User=root
+Group=root
+
+# Limit capabilities to only the strict subset needed for eBPF and tracing
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+
+# Lock down filesystem access
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+
+# Control Groups (cgroups) are needed for container resolution
+ProtectControlGroups=false
+
+# Mount locations needed for BPF maps pinning and cgroup path resolution
+ReadWritePaths=/sys/fs/bpf /sys/fs/cgroup /sys/kernel/debug /sys/kernel/tracing
+
+# Security settings
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false # Must be false since eBPF maps or JIT compilation might require it
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
