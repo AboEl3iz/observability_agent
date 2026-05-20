@@ -22,8 +22,7 @@ A production-grade eBPF observability agent written in Go and C that hooks direc
 
 It resolves kernel-level PIDs and cgroup IDs to human-readable container names (Docker, containerd/k8s) and surfaces the data through a rich interactive TUI with 8 specialised tabs.
 
-
-[![Watch the Demo](https://github.com/AboEl3iz/observability_agent/raw/main/output.gif)](https://github.com/AboEl3iz/observability_agent/blob/main/videos/demo_video.mp4)
+[![Watch the Demo](https://github.com/AboEl3iz/observability_agent/raw/main/videos/output.gif)](https://github.com/AboEl3iz/observability_agent/blob/main/videos/video_demo.mp4)
 ---
 
 ## Feature Matrix
